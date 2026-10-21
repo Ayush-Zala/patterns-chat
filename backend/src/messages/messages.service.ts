@@ -103,6 +103,13 @@ export class MessagesService {
             },
           },
         },
+        channel: {
+          select: {
+            id: true,
+            name: true,
+            workspaceId: true,
+          },
+        },
       },
     });
 

@@ -77,6 +77,12 @@ export class ConversationsController {
       .to(`conversation:${conversationId}`)
       .emit('new_direct_message', message);
 
+    if (recipientId) {
+      this.messagesGateway.server
+        .to(`user:${recipientId}`)
+        .emit('new_direct_message', message);
+    }
+
     // Notify recipient if they aren't the sender
     if (recipientId && recipientId !== user.id) {
       try {

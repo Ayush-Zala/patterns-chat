@@ -88,6 +88,32 @@ export class MessagesGateway implements OnGatewayConnection, OnGatewayDisconnect
     }
   }
 
+  @SubscribeMessage('join_workspace')
+  handleJoinWorkspace(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { workspaceId: string },
+  ) {
+    if (data?.workspaceId) {
+      const room = `workspace:${data.workspaceId}`;
+      client.join(room);
+      this.logger.log(`🏢 Socket ${client.id} joined workspace room ${room}`);
+      return { event: 'joined_workspace', workspaceId: data.workspaceId };
+    }
+  }
+
+  @SubscribeMessage('leave_workspace')
+  handleLeaveWorkspace(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { workspaceId: string },
+  ) {
+    if (data?.workspaceId) {
+      const room = `workspace:${data.workspaceId}`;
+      client.leave(room);
+      this.logger.log(`🏢 Socket ${client.id} left workspace room ${room}`);
+      return { event: 'left_workspace', workspaceId: data.workspaceId };
+    }
+  }
+
   @SubscribeMessage('join_user')
   handleJoinUser(
     @ConnectedSocket() client: Socket,
@@ -151,6 +177,14 @@ export class MessagesGateway implements OnGatewayConnection, OnGatewayDisconnect
       } else {
         // Broadcast main channel message
         this.server.to(room).emit('new_message', message);
+        if ((message as any).channel?.workspaceId) {
+          this.server
+            .to(`workspace:${(message as any).channel.workspaceId}`)
+            .emit('workspace_channel_message', {
+              channelId: data.channelId,
+              message,
+            });
+        }
         this.logger.log(`💬 Message broadcast to room ${room} from user ${userId}`);
       }
 

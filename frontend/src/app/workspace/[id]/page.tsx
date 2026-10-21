@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef, Suspense } from 'react';
+import React, { useState, useEffect, useRef, useMemo, Suspense } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import {
@@ -295,6 +295,70 @@ function WorkspaceShellContent() {
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const [showMobileSidebar, setShowMobileSidebar] = useState(false);
+
+  // Unread Message Badges State for Channels & Direct Messages
+  const [unreadChannels, setUnreadChannels] = useState<Record<string, number>>({});
+  const [unreadDirectMessages, setUnreadDirectMessages] = useState<Record<string, number>>({});
+  const activeChannelRef = useRef<Channel | null>(null);
+  const activeRecipientRef = useRef<ConversationParticipant | null>(null);
+
+  const channelsRef = useRef<Channel[]>(channels);
+  useEffect(() => {
+    channelsRef.current = channels;
+  }, [channels]);
+
+  const membersRef = useRef<WorkspaceMember[]>(members);
+  useEffect(() => {
+    membersRef.current = members;
+  }, [members]);
+
+  const totalUnreadChannels = useMemo(
+    () => Object.values(unreadChannels).reduce((sum, c) => sum + (c || 0), 0),
+    [unreadChannels],
+  );
+  const totalUnreadDMs = useMemo(
+    () => Object.values(unreadDirectMessages).reduce((sum, c) => sum + (c || 0), 0),
+    [unreadDirectMessages],
+  );
+  const totalUnreadCount = totalUnreadChannels + totalUnreadDMs;
+
+  // Floating Toast Alert for Messages arriving in other chats
+  const [messageToast, setMessageToast] = useState<{
+    id: string;
+    type: 'channel' | 'dm';
+    chatTitle: string;
+    senderName: string;
+    senderAvatar?: string;
+    content: string;
+    channel?: Channel;
+    senderUser?: ConversationParticipant;
+  } | null>(null);
+  const messageToastTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    activeChannelRef.current = activeChannel;
+    if (activeChannel?.id) {
+      setUnreadChannels((prev) => ({ ...prev, [activeChannel.id]: 0 }));
+    }
+  }, [activeChannel]);
+
+  useEffect(() => {
+    activeRecipientRef.current = activeRecipient;
+    if (activeRecipient?.id) {
+      setUnreadDirectMessages((prev) => ({ ...prev, [activeRecipient.id]: 0 }));
+    }
+  }, [activeRecipient]);
+
+  // Update browser document tab title with unread indicator
+  useEffect(() => {
+    const baseTitle = currentWs?.name ? `${currentWs.name} - TeamFlow` : 'TeamFlow';
+    if (totalUnreadCount > 0) {
+      document.title = `(${totalUnreadCount}) 💬 ${baseTitle}`;
+    } else {
+      document.title = baseTitle;
+    }
+  }, [totalUnreadCount, currentWs?.name]);
+
   const callTimerRef = useRef<NodeJS.Timeout | null>(null);
   const ringtoneIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const ringtoneAudioCtxRef = useRef<any | null>(null);
@@ -1341,12 +1405,15 @@ function WorkspaceShellContent() {
     loadNotifications();
   }, [workspaceId, token, user]);
 
-  // Global Notification & Pin Socket Listener
+  // Global Notification, Pin & Unread Activity Socket Listener
   useEffect(() => {
     if (!user?.id) return;
     const socket = getSocket();
 
     socket.emit('join_user', { userId: user.id });
+    if (workspaceId) {
+      socket.emit('join_workspace', { workspaceId });
+    }
 
     function handleNewNotification(notif: Notification) {
       setNotifications((prev) => [notif, ...prev]);
@@ -1404,17 +1471,104 @@ function WorkspaceShellContent() {
       });
     }
 
+    function handleWorkspaceChannelMessage(data: any) {
+      const channelId = data?.channelId || data?.channel?.id;
+      const msg = data?.message || data;
+      if (!channelId || !msg) return;
+
+      // Ignore messages sent by current user
+      if (msg.userId === user?.id) return;
+
+      // If user is currently looking at this channel (and not viewing a DM), ignore
+      if (activeChannelRef.current?.id === channelId && !activeRecipientRef.current) {
+        return;
+      }
+
+      setUnreadChannels((prev) => ({
+        ...prev,
+        [channelId]: (prev[channelId] || 0) + 1,
+      }));
+
+      playNotificationChime();
+
+      // Show floating notification banner for the incoming message
+      const matchingChannel = channelsRef.current.find((c) => c.id === channelId);
+      if (matchingChannel) {
+        if (messageToastTimerRef.current) clearTimeout(messageToastTimerRef.current);
+        setMessageToast({
+          id: msg.id || Date.now().toString(),
+          type: 'channel',
+          chatTitle: `#${matchingChannel.name}`,
+          senderName: msg.user?.name || 'Teammate',
+          senderAvatar: msg.user?.avatarUrl,
+          content: msg.content || (msg.attachments?.length ? 'Sent an attachment' : 'Sent a message'),
+          channel: matchingChannel,
+        });
+        messageToastTimerRef.current = setTimeout(() => {
+          setMessageToast(null);
+        }, 4500);
+      }
+    }
+
+    function handleGlobalDirectMessage(msg: DirectMessage) {
+      if (!msg || !msg.userId) return;
+      // Ignore messages sent by current user
+      if (msg.userId === user?.id) return;
+
+      // If user is currently in direct message chat with this sender:
+      if (activeRecipientRef.current?.id === msg.userId) {
+        setDirectMessages((prev) => {
+          if (prev.some((m) => m.id === msg.id)) return prev;
+          return [...prev, msg];
+        });
+        return;
+      }
+
+      setUnreadDirectMessages((prev) => ({
+        ...prev,
+        [msg.userId]: (prev[msg.userId] || 0) + 1,
+      }));
+
+      playNotificationChime();
+
+      // Show floating notification banner for the incoming DM
+      const senderMember = membersRef.current.find((m) => m.user.id === msg.userId);
+      const senderUser = senderMember?.user || msg.user;
+      if (senderUser) {
+        if (messageToastTimerRef.current) clearTimeout(messageToastTimerRef.current);
+        setMessageToast({
+          id: msg.id || Date.now().toString(),
+          type: 'dm',
+          chatTitle: senderUser.name,
+          senderName: senderUser.name,
+          senderAvatar: senderUser.avatarUrl,
+          content: msg.content || (msg.attachments?.length ? 'Sent an attachment' : 'Sent a direct message'),
+          senderUser: senderUser,
+        });
+        messageToastTimerRef.current = setTimeout(() => {
+          setMessageToast(null);
+        }, 4500);
+      }
+    }
+
     socket.on('new_notification', handleNewNotification);
     socket.on('message_pinned', handleMessagePinned);
     socket.on('direct_message_pinned', handleDirectMessagePinned);
+    socket.on('workspace_channel_message', handleWorkspaceChannelMessage);
+    socket.on('new_direct_message', handleGlobalDirectMessage);
 
     return () => {
+      if (workspaceId) {
+        socket.emit('leave_workspace', { workspaceId });
+      }
       socket.emit('leave_user', { userId: user.id });
       socket.off('new_notification', handleNewNotification);
       socket.off('message_pinned', handleMessagePinned);
       socket.off('direct_message_pinned', handleDirectMessagePinned);
+      socket.off('workspace_channel_message', handleWorkspaceChannelMessage);
+      socket.off('new_direct_message', handleGlobalDirectMessage);
     };
-  }, [user?.id, soundEnabled]);
+  }, [workspaceId, user?.id, soundEnabled]);
 
   // Notifications Actions
   async function handleMarkNotificationAsRead(id: string) {
@@ -3000,6 +3154,11 @@ function WorkspaceShellContent() {
                   }`}
                 />
                 <span>Channels ({channels.length})</span>
+                {totalUnreadChannels > 0 && channelsCollapsed && (
+                  <span className="ml-1 px-1.5 py-0.5 rounded-full bg-indigo-600 text-[9px] font-bold text-white shadow-2xs">
+                    {totalUnreadChannels}
+                  </span>
+                )}
               </button>
               <button
                 onClick={() => setShowCreateChannelModal(true)}
@@ -3014,6 +3173,7 @@ function WorkspaceShellContent() {
               <div className="space-y-0.5 mt-1">
                 {channels.map((ch) => {
                   const isActive = activeChannel?.id === ch.id && !activeRecipient;
+                  const unreadCount = unreadChannels[ch.id] || 0;
                   return (
                     <button
                       key={ch.id}
@@ -3023,10 +3183,13 @@ function WorkspaceShellContent() {
                         setActiveRecipient(null);
                         setActiveConversation(null);
                         setActiveThreadParent(null);
+                        setUnreadChannels((prev) => ({ ...prev, [ch.id]: 0 }));
                       }}
                       className={`w-full flex items-center justify-between rounded-xl px-2.5 py-1.5 font-medium text-xs transition-all text-left group ${
                         isActive
                           ? 'bg-indigo-50/90 text-indigo-900 font-bold border border-indigo-200/80 shadow-2xs'
+                          : unreadCount > 0
+                          ? 'bg-indigo-50/60 text-slate-900 font-bold border border-indigo-100 hover:bg-indigo-50'
                           : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
                       }`}
                     >
@@ -3035,6 +3198,8 @@ function WorkspaceShellContent() {
                           className={`flex h-5 w-5 items-center justify-center rounded-md shrink-0 ${
                             isActive
                               ? 'bg-indigo-600 text-white shadow-2xs'
+                              : unreadCount > 0
+                              ? 'bg-indigo-600 text-white shadow-xs'
                               : 'bg-slate-100 text-slate-500 group-hover:bg-slate-200/70'
                           }`}
                         >
@@ -3044,11 +3209,18 @@ function WorkspaceShellContent() {
                             <Hash className="h-3 w-3" />
                           )}
                         </div>
-                        <span className="truncate">{ch.name}</span>
+                        <span className={`truncate ${unreadCount > 0 && !isActive ? 'font-bold text-slate-900' : ''}`}>{ch.name}</span>
                       </div>
-                      {isActive && (
-                        <span className="h-1.5 w-1.5 rounded-full bg-indigo-600 shadow-xs shrink-0" />
-                      )}
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {unreadCount > 0 && !isActive && (
+                          <span className="flex items-center justify-center min-w-[18px] h-[18px] px-1.5 rounded-full bg-gradient-to-r from-indigo-600 to-purple-600 text-[10px] font-black text-white shadow-xs animate-pulse">
+                            {unreadCount > 99 ? '99+' : unreadCount}
+                          </span>
+                        )}
+                        {isActive && (
+                          <span className="h-1.5 w-1.5 rounded-full bg-indigo-600 shadow-xs shrink-0" />
+                        )}
+                      </div>
                     </button>
                   );
                 })}
@@ -3077,6 +3249,11 @@ function WorkspaceShellContent() {
                   }`}
                 />
                 <span>Direct Messages ({members.length})</span>
+                {totalUnreadDMs > 0 && dmsCollapsed && (
+                  <span className="ml-1 px-1.5 py-0.5 rounded-full bg-emerald-600 text-[9px] font-bold text-white shadow-2xs">
+                    {totalUnreadDMs}
+                  </span>
+                )}
               </button>
               <div className="flex items-center gap-0.5">
                 {isWorkspaceOwner && (
@@ -3107,13 +3284,19 @@ function WorkspaceShellContent() {
                 {members.map((m) => {
                   const isDmActive = activeRecipient?.id === m.user.id;
                   const isMe = m.user.id === user?.id;
+                  const unreadCount = unreadDirectMessages[m.user.id] || 0;
                   return (
                     <button
                       key={m.id}
-                      onClick={() => handleSelectDirectMessage(m.user)}
+                      onClick={() => {
+                        handleSelectDirectMessage(m.user);
+                        setUnreadDirectMessages((prev) => ({ ...prev, [m.user.id]: 0 }));
+                      }}
                       className={`w-full flex items-center justify-between rounded-xl px-2.5 py-1.5 text-left transition-all group ${
                         isDmActive
                           ? 'bg-indigo-50/90 border border-indigo-200/80 text-indigo-900 font-bold shadow-2xs'
+                          : unreadCount > 0
+                          ? 'bg-emerald-50/80 border border-emerald-200/80 font-bold text-slate-900 shadow-2xs'
                           : 'text-slate-700 hover:bg-slate-50 hover:text-slate-900'
                       }`}
                     >
@@ -3134,12 +3317,17 @@ function WorkspaceShellContent() {
                             }`}
                           />
                         </div>
-                        <span className="truncate text-xs font-medium">
+                        <span className={`truncate text-xs ${unreadCount > 0 && !isDmActive ? 'font-bold text-slate-900' : 'font-medium'}`}>
                           {m.user.name} {isMe && <span className="text-[10px] text-slate-400 font-normal">(you)</span>}
                         </span>
                       </div>
-                      <div className="flex items-center gap-1 shrink-0">
-                        {m.role === 'OWNER' && (
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {unreadCount > 0 && !isDmActive && (
+                          <span className="flex items-center justify-center min-w-[18px] h-[18px] px-1.5 rounded-full bg-emerald-600 text-[10px] font-black text-white shadow-xs animate-pulse">
+                            {unreadCount > 99 ? '99+' : unreadCount}
+                          </span>
+                        )}
+                        {m.role === 'OWNER' && !unreadCount && (
                           <span className="text-[9px] font-bold text-indigo-700 uppercase bg-indigo-50 px-1.5 py-0.2 rounded border border-indigo-200/80 shrink-0">
                             Owner
                           </span>
@@ -3310,11 +3498,17 @@ function WorkspaceShellContent() {
           <button
             type="button"
             onClick={() => setShowMobileSidebar(true)}
-            className="p-2 -ml-1 rounded-xl text-slate-600 hover:text-slate-900 hover:bg-slate-100 md:hidden transition-colors shrink-0"
+            className="relative p-2 -ml-1 rounded-xl text-slate-600 hover:text-slate-900 hover:bg-slate-100 md:hidden transition-colors shrink-0"
             title="Open channels & messages"
             aria-label="Open channels and messages"
           >
             <Menu className="h-5 w-5" />
+            {totalUnreadCount > 0 && (
+              <span className="absolute top-1.5 right-1.5 flex h-2.5 w-2.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-indigo-600 ring-2 ring-white"></span>
+              </span>
+            )}
           </button>
 
           {activeRecipient ? (
@@ -5278,29 +5472,44 @@ function WorkspaceShellContent() {
                   {filteredChannels.length === 0 ? (
                     <div className="px-3 py-2 text-xs text-slate-400">No channels found</div>
                   ) : (
-                    filteredChannels.map((c) => (
-                      <button
-                        key={c.id}
-                        onClick={() => {
-                          setActiveChannel(c);
-                          setActiveThreadParent(null);
-                          setShowCommandPalette(false);
-                          setCommandPaletteQuery('');
-                        }}
-                        className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
-                          activeChannel?.id === c.id
-                            ? 'bg-indigo-50 text-indigo-700 border border-indigo-200/80 shadow-2xs'
-                            : 'hover:bg-slate-100 text-slate-800'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2">
-                          <Hash className="h-3.5 w-3.5 text-indigo-600" />
-                          <span>{c.name}</span>
-                          {c.isPrivate && <Lock className="h-3 w-3 text-amber-500 ml-1" />}
-                        </div>
-                        <span className="text-[10px] text-slate-400">Jump →</span>
-                      </button>
-                    ))
+                    filteredChannels.map((c) => {
+                      const unreadCount = unreadChannels[c.id] || 0;
+                      return (
+                        <button
+                          key={c.id}
+                          onClick={() => {
+                            setActiveChannel(c);
+                            setActiveRecipient(null);
+                            setActiveConversation(null);
+                            setActiveThreadParent(null);
+                            setUnreadChannels((prev) => ({ ...prev, [c.id]: 0 }));
+                            setShowCommandPalette(false);
+                            setCommandPaletteQuery('');
+                          }}
+                          className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+                            activeChannel?.id === c.id
+                              ? 'bg-indigo-50 text-indigo-700 border border-indigo-200/80 shadow-2xs'
+                              : unreadCount > 0
+                              ? 'bg-indigo-50/50 text-indigo-950 font-bold border border-indigo-100 hover:bg-indigo-50'
+                              : 'hover:bg-slate-100 text-slate-800'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 truncate">
+                            <Hash className={`h-3.5 w-3.5 ${unreadCount > 0 ? 'text-indigo-600 font-bold' : 'text-slate-400'}`} />
+                            <span className="truncate">{c.name}</span>
+                            {c.isPrivate && <Lock className="h-3 w-3 text-amber-500 ml-1 shrink-0" />}
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {unreadCount > 0 && (
+                              <span className="px-1.5 py-0.5 rounded-full bg-indigo-600 text-[9px] font-black text-white shadow-2xs">
+                                {unreadCount} new
+                              </span>
+                            )}
+                            <span className="text-[10px] text-slate-400">Jump →</span>
+                          </div>
+                        </button>
+                      );
+                    })
                   )}
                 </div>
               </div>
@@ -5314,27 +5523,42 @@ function WorkspaceShellContent() {
                   {filteredMembers.length === 0 ? (
                     <div className="px-3 py-2 text-xs text-slate-400">No members found</div>
                   ) : (
-                    filteredMembers.map((m) => (
-                      <button
-                        key={m.id}
-                        onClick={() => {
-                          handleSelectDirectMessage(m.user);
-                          setShowCommandPalette(false);
-                          setCommandPaletteQuery('');
-                        }}
-                        className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold text-slate-800 hover:bg-slate-100 text-left transition-colors"
-                      >
-                        <div className="flex items-center gap-2.5">
-                          <img
-                            src={m.user.avatarUrl || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
-                            alt={m.user.name}
-                            className="h-5 w-5 rounded-md border border-slate-200"
-                          />
-                          <span>{m.user.name}</span>
-                        </div>
-                        <span className="text-[10px] text-indigo-500 font-semibold">Message →</span>
-                      </button>
-                    ))
+                    filteredMembers.map((m) => {
+                      const unreadCount = unreadDirectMessages[m.user.id] || 0;
+                      return (
+                        <button
+                          key={m.id}
+                          onClick={() => {
+                            handleSelectDirectMessage(m.user);
+                            setUnreadDirectMessages((prev) => ({ ...prev, [m.user.id]: 0 }));
+                            setShowCommandPalette(false);
+                            setCommandPaletteQuery('');
+                          }}
+                          className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+                            unreadCount > 0
+                              ? 'bg-emerald-50/70 border border-emerald-200/80 text-emerald-950 font-bold'
+                              : 'text-slate-800 hover:bg-slate-100'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5 truncate">
+                            <img
+                              src={m.user.avatarUrl || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
+                              alt={m.user.name}
+                              className="h-5 w-5 rounded-md border border-slate-200 shrink-0"
+                            />
+                            <span className="truncate">{m.user.name}</span>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {unreadCount > 0 && (
+                              <span className="px-1.5 py-0.5 rounded-full bg-emerald-600 text-[9px] font-black text-white shadow-2xs">
+                                {unreadCount} new
+                              </span>
+                            )}
+                            <span className="text-[10px] text-indigo-500 font-semibold">Message →</span>
+                          </div>
+                        </button>
+                      );
+                    })
                   )}
                 </div>
               </div>
@@ -6549,6 +6773,66 @@ function WorkspaceShellContent() {
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─────────────────────────────────────────────────────────────
+          INCOMING WORKSPACE / DM MESSAGE NOTIFICATION TOAST
+      ───────────────────────────────────────────────────────────── */}
+      {messageToast && (
+        <div className="fixed top-4 right-4 z-50 max-w-sm w-[calc(100vw-2rem)] sm:w-88 animate-in slide-in-from-top-3 fade-in duration-200">
+          <div
+            onClick={() => {
+              if (messageToast.type === 'channel' && messageToast.channel) {
+                setShowMobileSidebar(false);
+                setActiveChannel(messageToast.channel);
+                setActiveRecipient(null);
+                setActiveConversation(null);
+                setActiveThreadParent(null);
+                setUnreadChannels((prev) => ({ ...prev, [messageToast.channel!.id]: 0 }));
+              } else if (messageToast.type === 'dm' && messageToast.senderUser) {
+                handleSelectDirectMessage(messageToast.senderUser);
+                setUnreadDirectMessages((prev) => ({ ...prev, [messageToast.senderUser!.id]: 0 }));
+              }
+              setMessageToast(null);
+            }}
+            className="cursor-pointer group flex items-start gap-3 p-3 rounded-2xl bg-white/95 backdrop-blur-md shadow-2xl border border-indigo-200/90 hover:border-indigo-400 transition-all hover:scale-[1.01]"
+          >
+            <div className="relative shrink-0">
+              <img
+                src={messageToast.senderAvatar || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
+                alt={messageToast.senderName}
+                className="h-9 w-9 rounded-xl border border-slate-200 object-cover shadow-2xs"
+              />
+              <div className="absolute -bottom-1 -right-1 h-4 w-4 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[9px] font-bold shadow-xs">
+                {messageToast.type === 'channel' ? '#' : '@'}
+              </div>
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-1">
+                <span className="text-xs font-bold text-slate-900 truncate">
+                  {messageToast.chatTitle}
+                </span>
+                <span className="text-[10px] text-indigo-600 font-semibold group-hover:underline">
+                  View →
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-600 truncate mt-0.5">
+                <span className="font-semibold text-slate-800">{messageToast.senderName}:</span>{' '}
+                {messageToast.content}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setMessageToast(null);
+              }}
+              className="text-slate-400 hover:text-slate-600 p-1 -mr-1 -mt-1 rounded-lg transition-colors"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
           </div>
         </div>
       )}

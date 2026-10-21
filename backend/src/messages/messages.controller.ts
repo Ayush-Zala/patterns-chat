@@ -82,6 +82,14 @@ export class MessagesController {
       }
     } else {
       this.messagesGateway.server.to(room).emit('new_message', message);
+      if ((message as any).channel?.workspaceId) {
+        this.messagesGateway.server
+          .to(`workspace:${(message as any).channel.workspaceId}`)
+          .emit('workspace_channel_message', {
+            channelId,
+            message,
+          });
+      }
     }
 
     // Check for @mentions in message content
