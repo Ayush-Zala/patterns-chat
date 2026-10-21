@@ -28,9 +28,10 @@ backend/dist/
 frontend/.env.local
 backend/.env
 
-# Uploads & Large File Storage
-backend/uploads/
-uploads/
+# Uploads & Large File Storage (Ignore storage directory, NOT source code)
+/uploads/
+/backend/uploads/
+!backend/src/uploads/
 *.iso
 *.dmg
 

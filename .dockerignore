@@ -7,5 +7,6 @@ frontend
 .next
 dist
 backend/dist
-backend/uploads
-uploads
+/backend/uploads
+/uploads
+!backend/src/uploads
