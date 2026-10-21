@@ -71,6 +71,7 @@ import {
   Mic,
   MicOff,
   MonitorUp,
+  Menu,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { Workspace, WorkspaceMember } from '@/types/auth';
@@ -292,6 +293,8 @@ function WorkspaceShellContent() {
   const callStatusRef = useRef<'idle' | 'calling' | 'incoming' | 'connected'>('idle');
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const [showMobileSidebar, setShowMobileSidebar] = useState(false);
   const callTimerRef = useRef<NodeJS.Timeout | null>(null);
   const ringtoneIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const ringtoneAudioCtxRef = useRef<any | null>(null);
@@ -840,17 +843,60 @@ function WorkspaceShellContent() {
   }
 
   async function getMediaStream(isVideo: boolean): Promise<MediaStream> {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      alert('Media devices not supported in this browser. Please ensure you are using HTTPS or a modern browser like Chrome/Safari.');
+      throw new Error('getUserMedia not supported');
+    }
+
+    const audioConstraints: MediaTrackConstraints = {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    };
+
     try {
-      if (typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      if (isVideo) {
+        try {
+          return await navigator.mediaDevices.getUserMedia({
+            audio: audioConstraints,
+            video: {
+              facingMode: 'user',
+              width: { ideal: 1280, max: 1920 },
+              height: { ideal: 720, max: 1080 },
+            },
+          });
+        } catch (videoErr) {
+          console.warn('High-definition camera constraint failed, retrying basic video:', videoErr);
+          return await navigator.mediaDevices.getUserMedia({
+            audio: audioConstraints,
+            video: true,
+          });
+        }
+      } else {
         return await navigator.mediaDevices.getUserMedia({
-          audio: true,
-          video: isVideo ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false,
+          audio: audioConstraints,
+          video: false,
         });
       }
-    } catch (err) {
-      console.warn('Physical camera/mic access unavailable, using synthetic stream fallback:', err);
+    } catch (err: any) {
+      console.error('Permission denied or media hardware error:', err);
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        alert(
+          isVideo
+            ? 'Camera and Microphone permissions are required to join the video call. Please allow microphone and camera access in your browser or device settings.'
+            : 'Microphone permission is required to join the voice call. Please allow microphone access in your browser or device settings.'
+        );
+      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+        alert(
+          isVideo
+            ? 'No camera or microphone was found on your device.'
+            : 'No microphone was found on your device.'
+        );
+      } else {
+        alert(`Could not access media devices: ${err.message || 'Permission or hardware error'}`);
+      }
+      throw err;
     }
-    return createSyntheticStream(isVideo);
   }
 
   function cleanupCall(notifyPeer: boolean = true) {
@@ -870,6 +916,15 @@ function WorkspaceShellContent() {
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close();
       peerConnectionRef.current = null;
+    }
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.srcObject = null;
+    }
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = null;
+    }
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = null;
     }
     pendingCandidatesRef.current = [];
 
@@ -900,6 +955,11 @@ function WorkspaceShellContent() {
     setCallStatus('calling');
     startOutgoingRingtone();
 
+    // Unlock/pre-warm mobile audio pipeline on user touch gesture
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.play().catch(() => {});
+    }
+
     try {
       const stream = await getMediaStream(isVideo);
       localStreamRef.current = stream;
@@ -925,10 +985,25 @@ function WorkspaceShellContent() {
       };
 
       pc.ontrack = (event) => {
+        console.log('Received remote media track:', event.track.kind);
         if (event.streams && event.streams[0]) {
-          remoteStreamRef.current = event.streams[0];
+          const remoteStream = event.streams[0];
+          remoteStreamRef.current = remoteStream;
+
+          // Dedicated mobile and desktop audio player
+          if (remoteAudioRef.current) {
+            remoteAudioRef.current.srcObject = remoteStream;
+            remoteAudioRef.current.volume = 1.0;
+            remoteAudioRef.current.play().catch((e) => {
+              console.warn('remoteAudioRef play error:', e);
+            });
+          }
+
           if (remoteVideoRef.current) {
-            remoteVideoRef.current.srcObject = event.streams[0];
+            remoteVideoRef.current.srcObject = remoteStream;
+            remoteVideoRef.current.play().catch((e) => {
+              console.warn('remoteVideoRef play error:', e);
+            });
           }
         }
       };
@@ -949,8 +1024,8 @@ function WorkspaceShellContent() {
     } catch (err) {
       console.error('Failed to initiate call:', err);
       cleanupCall(false);
-      setCallNotificationMsg('Could not initiate call');
-      setTimeout(() => setCallNotificationMsg(null), 3000);
+      setCallNotificationMsg('Could not initiate call (Microphone/Camera permission needed)');
+      setTimeout(() => setCallNotificationMsg(null), 4000);
     }
   }
 
@@ -963,6 +1038,11 @@ function WorkspaceShellContent() {
     setCallPeer(caller);
     setCallType(isVideo ? 'video' : 'audio');
     setCallStatus('connected');
+
+    // Unlock/pre-warm mobile audio pipeline on user touch gesture
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.play().catch(() => {});
+    }
 
     try {
       const stream = await getMediaStream(isVideo);
@@ -989,10 +1069,25 @@ function WorkspaceShellContent() {
       };
 
       pc.ontrack = (event) => {
+        console.log('Received remote media track on accept:', event.track.kind);
         if (event.streams && event.streams[0]) {
-          remoteStreamRef.current = event.streams[0];
+          const remoteStream = event.streams[0];
+          remoteStreamRef.current = remoteStream;
+
+          // Dedicated mobile and desktop audio player
+          if (remoteAudioRef.current) {
+            remoteAudioRef.current.srcObject = remoteStream;
+            remoteAudioRef.current.volume = 1.0;
+            remoteAudioRef.current.play().catch((e) => {
+              console.warn('remoteAudioRef play error:', e);
+            });
+          }
+
           if (remoteVideoRef.current) {
-            remoteVideoRef.current.srcObject = event.streams[0];
+            remoteVideoRef.current.srcObject = remoteStream;
+            remoteVideoRef.current.play().catch((e) => {
+              console.warn('remoteVideoRef play error:', e);
+            });
           }
         }
       };
@@ -1020,6 +1115,8 @@ function WorkspaceShellContent() {
     } catch (err) {
       console.error('Failed to accept call:', err);
       cleanupCall(true);
+      setCallNotificationMsg('Call cancelled - camera/mic permission not granted');
+      setTimeout(() => setCallNotificationMsg(null), 4000);
     }
   }
 
@@ -1116,8 +1213,16 @@ function WorkspaceShellContent() {
   }, [callStatus, isVideoMuted]);
 
   useEffect(() => {
-    if (remoteVideoRef.current && remoteStreamRef.current) {
-      remoteVideoRef.current.srcObject = remoteStreamRef.current;
+    if (callStatus === 'connected' && remoteStreamRef.current) {
+      if (remoteAudioRef.current) {
+        remoteAudioRef.current.srcObject = remoteStreamRef.current;
+        remoteAudioRef.current.volume = 1.0;
+        remoteAudioRef.current.play().catch((e) => console.warn('remoteAudio play failed:', e));
+      }
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = remoteStreamRef.current;
+        remoteVideoRef.current.play().catch((e) => console.warn('remoteVideo play failed:', e));
+      }
     }
   }, [callStatus]);
 
@@ -1711,6 +1816,7 @@ function WorkspaceShellContent() {
   // Module 5 Handlers: Direct Messages & Presence
   async function handleSelectDirectMessage(targetUser: ConversationParticipant) {
     if (!token || !user) return;
+    setShowMobileSidebar(false);
     setActiveChannel(null);
     setActiveThreadParent(null);
     setActiveRecipient(targetUser);
@@ -2732,10 +2838,22 @@ function WorkspaceShellContent() {
 
   return (
     <div className="h-screen w-screen flex overflow-hidden bg-[#F8FAFC] text-slate-900 antialiased font-sans select-none relative">
+      {/* Mobile Backdrop Overlay */}
+      {showMobileSidebar && (
+        <div
+          className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-30 md:hidden animate-in fade-in duration-200"
+          onClick={() => setShowMobileSidebar(false)}
+        />
+      )}
+
       {/* ─────────────────────────────────────────────────────────────
           1. UNIFIED STUDIO NAVIGATION SIDEBAR (Linear / Notion caliber)
       ───────────────────────────────────────────────────────────── */}
-      <aside className="w-72 bg-white flex flex-col shrink-0 border-r border-slate-200/80 z-20 shadow-[2px_0_12px_rgba(0,0,0,0.02)] relative select-none">
+      <aside
+        className={`fixed inset-y-0 left-0 z-40 w-72 bg-white flex flex-col shrink-0 border-r border-slate-200/80 shadow-2xl md:shadow-[2px_0_12px_rgba(0,0,0,0.02)] md:static md:translate-x-0 transition-transform duration-300 ease-in-out select-none ${
+          showMobileSidebar ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
         {/* Workspace Hub & Switcher Header */}
         <div className="p-3 border-b border-slate-100 relative">
           <div className="flex items-center justify-between gap-2">
@@ -2773,6 +2891,16 @@ function WorkspaceShellContent() {
                 {copiedCode ? <Check className="h-4 w-4 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
               </button>
             )}
+
+            {/* Mobile close button */}
+            <button
+              type="button"
+              onClick={() => setShowMobileSidebar(false)}
+              className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 md:hidden transition-colors shrink-0"
+              title="Close sidebar"
+            >
+              <X className="h-5 w-5" />
+            </button>
           </div>
 
           {/* Workspace Switcher Popover */}
@@ -2890,6 +3018,7 @@ function WorkspaceShellContent() {
                     <button
                       key={ch.id}
                       onClick={() => {
+                        setShowMobileSidebar(false);
                         setActiveChannel(ch);
                         setActiveRecipient(null);
                         setActiveConversation(null);
@@ -3016,7 +3145,7 @@ function WorkspaceShellContent() {
                           </span>
                         )}
                         {!isMe && (
-                          <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 transition-opacity">
+                          <div className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 flex items-center gap-0.5 transition-opacity">
                             <span
                               role="button"
                               onClick={(e) => {
@@ -3176,7 +3305,18 @@ function WorkspaceShellContent() {
       ───────────────────────────────────────────────────────────── */}
       <main className="flex-1 flex flex-col bg-[#FAFBFC] min-w-0 text-slate-900 relative overflow-hidden">
         {/* Unified Canvas Header (Channel/DM Context + Live Controls - Always 1 single row) */}
-        <header className="h-16 px-6 border-b border-slate-200/80 bg-white/90 backdrop-blur-xl flex items-center justify-between shrink-0 z-10 shadow-[0_1px_3px_rgba(0,0,0,0.02)] flex-nowrap whitespace-nowrap overflow-x-auto no-scrollbar gap-4">
+        <header className="h-16 px-3 sm:px-6 border-b border-slate-200/80 bg-white/90 backdrop-blur-xl flex items-center justify-between shrink-0 z-10 shadow-[0_1px_3px_rgba(0,0,0,0.02)] flex-nowrap whitespace-nowrap overflow-x-auto no-scrollbar gap-2 sm:gap-4">
+          {/* Mobile hamburger menu button */}
+          <button
+            type="button"
+            onClick={() => setShowMobileSidebar(true)}
+            className="p-2 -ml-1 rounded-xl text-slate-600 hover:text-slate-900 hover:bg-slate-100 md:hidden transition-colors shrink-0"
+            title="Open channels & messages"
+            aria-label="Open channels and messages"
+          >
+            <Menu className="h-5 w-5" />
+          </button>
+
           {activeRecipient ? (
             <div className="flex items-center gap-3 min-w-0 shrink">
               <div className="relative shrink-0">
@@ -3264,27 +3404,27 @@ function WorkspaceShellContent() {
           )}
 
           {/* Header Right Actions & Live Controls - Always 1 single row */}
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {/* 1-on-1 Audio / Video Call Controls for DM */}
             {activeRecipient && (
               <>
                 <button
                   type="button"
                   onClick={() => handleStartCall(activeRecipient, false)}
-                  className="flex items-center gap-1.5 rounded-xl bg-white border border-slate-200/80 hover:bg-emerald-50 hover:border-emerald-300 hover:text-emerald-700 px-3 py-1.5 text-xs font-semibold text-slate-700 transition-all shadow-subtle shrink-0 whitespace-nowrap"
+                  className="flex items-center gap-1.5 rounded-xl bg-white border border-slate-200/80 hover:bg-emerald-50 hover:border-emerald-300 hover:text-emerald-700 p-2 sm:px-3 sm:py-1.5 text-xs font-semibold text-slate-700 transition-all shadow-subtle shrink-0 whitespace-nowrap"
                   title={`Start voice call with ${activeRecipient.name}`}
                 >
-                  <Phone className="h-3.5 w-3.5 text-emerald-600" />
-                  <span>Audio Call</span>
+                  <Phone className="h-4 w-4 text-emerald-600 shrink-0" />
+                  <span className="hidden sm:inline font-bold">Voice Call</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => handleStartCall(activeRecipient, true)}
-                  className="flex items-center gap-1.5 rounded-xl bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 hover:border-indigo-300 text-indigo-700 px-3 py-1.5 text-xs font-bold transition-all shadow-subtle shrink-0 whitespace-nowrap"
+                  className="flex items-center gap-1.5 rounded-xl bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 hover:border-indigo-300 text-indigo-700 p-2 sm:px-3 sm:py-1.5 text-xs font-bold transition-all shadow-subtle shrink-0 whitespace-nowrap"
                   title={`Start video call with ${activeRecipient.name}`}
                 >
-                  <Video className="h-3.5 w-3.5 text-indigo-600" />
-                  <span>Video Call</span>
+                  <Video className="h-4 w-4 text-indigo-600 shrink-0" />
+                  <span className="hidden sm:inline font-bold">Video Call</span>
                 </button>
               </>
             )}
@@ -3293,15 +3433,15 @@ function WorkspaceShellContent() {
             {!activeRecipient && (
               <button
                 onClick={() => setHuddleActive(!huddleActive)}
-              className={`flex items-center gap-2 rounded-xl px-3 py-1.5 text-xs font-bold border transition-all shadow-subtle shrink-0 whitespace-nowrap ${
+              className={`flex items-center gap-1.5 sm:gap-2 rounded-xl p-2 sm:px-3 sm:py-1.5 text-xs font-bold border transition-all shadow-subtle shrink-0 whitespace-nowrap ${
                 huddleActive
                   ? 'bg-emerald-50 text-emerald-700 border-emerald-300 shadow-xs'
                   : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200/80 hover:border-slate-300'
               }`}
               title="Toggle Audio Huddle"
             >
-              <Headphones className={`h-3.5 w-3.5 ${huddleActive ? 'text-emerald-600' : 'text-indigo-600'}`} />
-              <span>{huddleActive ? 'Huddle Live' : 'Start Huddle'}</span>
+              <Headphones className={`h-3.5 w-3.5 ${huddleActive ? 'text-emerald-600' : 'text-indigo-600'} shrink-0`} />
+              <span className="hidden sm:inline">{huddleActive ? 'Huddle Live' : 'Start Huddle'}</span>
               {huddleActive && (
                 <span className="flex items-center gap-0.5 ml-1">
                   <span className="h-2 w-0.5 bg-emerald-500 animate-pulse" />
@@ -3315,11 +3455,11 @@ function WorkspaceShellContent() {
             {/* Pinned Messages Button */}
             <button
               onClick={handleLoadPinnedMessages}
-              className="flex items-center gap-1.5 rounded-xl bg-white border border-slate-200/80 hover:border-amber-300 hover:bg-amber-50/50 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:text-amber-800 transition-all shadow-subtle shrink-0 whitespace-nowrap"
+              className="flex items-center gap-1.5 rounded-xl bg-white border border-slate-200/80 hover:border-amber-300 hover:bg-amber-50/50 p-2 sm:px-3 sm:py-1.5 text-xs font-semibold text-slate-700 hover:text-amber-800 transition-all shadow-subtle shrink-0 whitespace-nowrap"
               title="View pinned messages"
             >
-              <Pin className="h-3.5 w-3.5 text-amber-500 fill-amber-400" />
-              <span>
+              <Pin className="h-3.5 w-3.5 text-amber-500 fill-amber-400 shrink-0" />
+              <span className="hidden sm:inline">
                 {activeRecipient
                   ? directMessages.filter((m) => m.isPinned).length
                   : messages.filter((m) => m.isPinned).length}{' '}
@@ -3334,11 +3474,11 @@ function WorkspaceShellContent() {
                   setAddMemberSearchQuery('');
                   setShowAddChannelMemberModal(true);
                 }}
-                className="flex items-center gap-1.5 rounded-xl bg-indigo-50 border border-indigo-200 hover:bg-indigo-100/80 hover:border-indigo-300 px-3 py-1.5 text-xs font-bold text-indigo-700 transition-all shadow-subtle shrink-0 whitespace-nowrap"
+                className="flex items-center gap-1.5 rounded-xl bg-indigo-50 border border-indigo-200 hover:bg-indigo-100/80 hover:border-indigo-300 p-2 sm:px-3 sm:py-1.5 text-xs font-bold text-indigo-700 transition-all shadow-subtle shrink-0 whitespace-nowrap"
                 title="Add people to this channel"
               >
-                <UserPlus className="h-3.5 w-3.5" />
-                <span>Add People</span>
+                <UserPlus className="h-3.5 w-3.5 shrink-0" />
+                <span className="hidden sm:inline">Add People</span>
               </button>
             )}
 
@@ -3347,7 +3487,7 @@ function WorkspaceShellContent() {
                 setChannelMembersTab('channel');
                 setShowMembersDrawer(!showMembersDrawer);
               }}
-              className="flex items-center gap-2 rounded-xl bg-white border border-slate-200/80 hover:bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 transition-all shadow-subtle shrink-0 whitespace-nowrap"
+              className="flex items-center gap-1.5 sm:gap-2 rounded-xl bg-white border border-slate-200/80 hover:bg-slate-50 p-2 sm:px-3 sm:py-1.5 text-xs font-semibold text-slate-700 transition-all shadow-subtle shrink-0 whitespace-nowrap"
               title="View channel members"
             >
               <div className="flex -space-x-1.5 overflow-hidden shrink-0">
@@ -3369,7 +3509,7 @@ function WorkspaceShellContent() {
                     />
                   ))}
               </div>
-              <span>
+              <span className="hidden sm:inline">
                 {activeRecipient
                   ? `${members.length} ${members.length === 1 ? 'member' : 'members'}`
                   : !activeChannel?.isPrivate
@@ -3422,9 +3562,9 @@ function WorkspaceShellContent() {
             {activeRecipient ? (
               <div className="flex-1 flex flex-col justify-between overflow-hidden bg-white">
                 {/* Direct Message Feed Stream */}
-                <div className="flex-1 overflow-y-auto px-6 py-6 space-y-3">
+                <div className="flex-1 overflow-y-auto px-3 sm:px-6 py-4 sm:py-6 space-y-3">
                   {/* Direct Message Start Hero Card */}
-                  <div className="p-6 rounded-3xl bg-gradient-to-br from-indigo-50/70 via-purple-50/40 to-slate-50 border border-slate-200/80 mb-6 shadow-xs">
+                  <div className="p-4 sm:p-6 rounded-3xl bg-gradient-to-br from-indigo-50/70 via-purple-50/40 to-slate-50 border border-slate-200/80 mb-6 shadow-xs">
                     <div className="relative inline-block mb-3">
                       <img
                         src={activeRecipient.avatarUrl || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
@@ -3686,10 +3826,10 @@ function WorkspaceShellContent() {
                 </div>
 
                 {/* Floating Direct Message Composer */}
-                <div className="px-6 pb-6 pt-1 relative">
+                <div className="px-3 sm:px-6 pb-3 sm:pb-6 pt-1 relative">
                   {/* Mention Autocomplete Dropdown for DM */}
                   {mentionType && mentionTarget === 'dm' && (
-                    <div className="absolute left-6 right-6 bottom-[100%] mb-2 z-30 max-h-56 overflow-y-auto rounded-2xl bg-white border border-slate-200/90 shadow-2xl p-2 animate-in fade-in slide-in-from-bottom-2 duration-150">
+                    <div className="absolute left-3 right-3 sm:left-6 sm:right-6 bottom-[100%] mb-2 z-30 max-h-56 overflow-y-auto rounded-2xl bg-white border border-slate-200/90 shadow-2xl p-2 animate-in fade-in slide-in-from-bottom-2 duration-150">
                       <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-3 py-1 flex items-center justify-between">
                         <span>{mentionType === 'user' ? 'Mention Member' : 'Mention Space / Channel'}</span>
                         <span>esc to dismiss</span>
@@ -3923,9 +4063,9 @@ function WorkspaceShellContent() {
             ) : (
               <div className="flex-1 flex flex-col justify-between overflow-hidden bg-white">
                 {/* Message Feed Stream */}
-                <div className="flex-1 overflow-y-auto px-6 py-6 space-y-3">
+                <div className="flex-1 overflow-y-auto px-3 sm:px-6 py-4 sm:py-6 space-y-3">
                   {/* Modern Start-Of-Channel Hero */}
-                  <div className="p-6 rounded-3xl bg-gradient-to-br from-indigo-50/70 via-purple-50/40 to-slate-50 border border-slate-200/80 mb-6 shadow-xs">
+                  <div className="p-4 sm:p-6 rounded-3xl bg-gradient-to-br from-indigo-50/70 via-purple-50/40 to-slate-50 border border-slate-200/80 mb-6 shadow-xs">
                     <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-tr from-indigo-600 to-purple-600 text-white mb-3 shadow-md shadow-indigo-600/20">
                       <Hash className="h-6 w-6" />
                     </div>
@@ -4250,7 +4390,7 @@ function WorkspaceShellContent() {
                 </div>
 
                 {/* Typing Indicator */}
-                <div className="px-6 h-5 flex items-center text-xs text-indigo-600 font-medium italic">
+                <div className="px-3 sm:px-6 h-5 flex items-center text-xs text-indigo-600 font-medium italic">
                   {typingUsers.length > 0 && (
                     <span className="flex items-center gap-1.5 animate-pulse">
                       <span>{typingUsers.join(', ')} {typingUsers.length === 1 ? 'is' : 'are'} typing...</span>
@@ -4259,10 +4399,10 @@ function WorkspaceShellContent() {
                 </div>
 
                 {/* Modern Floating Glass Message Composer */}
-                <div className="px-6 pb-6 pt-1 relative">
+                <div className="px-3 sm:px-6 pb-3 sm:pb-6 pt-1 relative">
                   {/* Mention Autocomplete Dropdown for Channel */}
                   {mentionType && mentionTarget === 'channel' && (
-                    <div className="absolute left-6 right-6 bottom-[100%] mb-2 z-30 max-h-56 overflow-y-auto rounded-2xl bg-white border border-slate-200/90 shadow-2xl p-2 animate-in fade-in slide-in-from-bottom-2 duration-150">
+                    <div className="absolute left-3 right-3 sm:left-6 sm:right-6 bottom-[100%] mb-2 z-30 max-h-56 overflow-y-auto rounded-2xl bg-white border border-slate-200/90 shadow-2xl p-2 animate-in fade-in slide-in-from-bottom-2 duration-150">
                       <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-3 py-1 flex items-center justify-between">
                         <span>{mentionType === 'user' ? 'Mention Member' : 'Mention Space / Channel'}</span>
                         <span>esc to dismiss</span>
@@ -4519,7 +4659,7 @@ function WorkspaceShellContent() {
                 5. MODERN THREAD DRAWER (Slideout Side-Panel Light)
             ───────────────────────────────────────────────────────────── */}
             {activeThreadParent && (
-              <aside className="w-[420px] border-l border-slate-200/80 bg-slate-50/95 flex flex-col shrink-0 animate-in slide-in-from-right duration-200 shadow-2xl z-10">
+              <aside className="fixed inset-y-0 right-0 z-40 w-full sm:w-[420px] md:relative md:inset-auto md:w-[380px] lg:w-[420px] border-l border-slate-200/80 bg-slate-50/95 flex flex-col shrink-0 animate-in slide-in-from-right duration-200 shadow-2xl">
                 {/* Thread Header */}
                 <div className="h-14 px-5 border-b border-slate-200/80 flex items-center justify-between shrink-0 bg-white">
                   <div className="flex items-center gap-2">
@@ -4832,7 +4972,7 @@ function WorkspaceShellContent() {
 
             {/* Members Slideout Panel */}
             {showMembersDrawer && !activeThreadParent && (
-              <aside className="w-80 border-l border-slate-200/80 bg-slate-50/95 p-4 flex flex-col shrink-0 animate-in slide-in-from-right duration-150 shadow-2xl">
+              <aside className="fixed inset-y-0 right-0 z-40 w-full sm:w-80 md:relative md:inset-auto md:w-80 border-l border-slate-200/80 bg-white md:bg-slate-50/95 p-4 flex flex-col shrink-0 animate-in slide-in-from-right duration-150 shadow-2xl">
                 {/* Drawer Header */}
                 <div className="flex items-center justify-between pb-3 border-b border-slate-200/80">
                   <div className="flex items-center gap-2">
@@ -5670,7 +5810,7 @@ function WorkspaceShellContent() {
           10. PINNED MESSAGES DRAWER (Slack-Style Pinned Drawer)
       ───────────────────────────────────────────────────────────── */}
       {showPinnedDrawer && (
-        <aside className="fixed top-12 bottom-0 right-0 w-88 border-l border-slate-200/90 bg-white flex flex-col shrink-0 z-30 shadow-2xl animate-in slide-in-from-right-4 duration-200">
+        <aside className="fixed inset-y-0 sm:top-12 sm:bottom-0 right-0 w-full sm:w-88 border-l border-slate-200/90 bg-white flex flex-col shrink-0 z-40 shadow-2xl animate-in slide-in-from-right-4 duration-200">
           <div className="h-14 px-5 border-b border-slate-200/80 flex items-center justify-between shrink-0 bg-slate-50/80">
             <div className="flex items-center gap-2">
               <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-amber-50 text-amber-600 border border-amber-200">
@@ -5766,7 +5906,7 @@ function WorkspaceShellContent() {
           11. ACTIVITY & NOTIFICATIONS DRAWER
       ───────────────────────────────────────────────────────────── */}
       {showNotificationDrawer && (
-        <aside className="fixed top-12 bottom-0 right-0 w-88 border-l border-slate-200/90 bg-white flex flex-col shrink-0 z-30 shadow-2xl animate-in slide-in-from-right-4 duration-200">
+        <aside className="fixed inset-y-0 sm:top-12 sm:bottom-0 right-0 w-full sm:w-88 border-l border-slate-200/90 bg-white flex flex-col shrink-0 z-40 shadow-2xl animate-in slide-in-from-right-4 duration-200">
           <div className="h-14 px-5 border-b border-slate-200/80 flex items-center justify-between shrink-0 bg-slate-50/80">
             <div className="flex items-center gap-2">
               <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-50 text-indigo-600 border border-indigo-200">
@@ -6430,7 +6570,7 @@ function WorkspaceShellContent() {
       ───────────────────────────────────────────────────────────── */}
       {callStatus === 'incoming' && incomingCall && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-          <div className="w-full max-w-sm rounded-3xl bg-slate-900 text-white shadow-2xl border border-slate-700/80 overflow-hidden animate-in zoom-in-95 duration-200 p-6 flex flex-col items-center text-center">
+          <div className="w-full max-w-sm rounded-3xl bg-slate-900 text-white shadow-2xl border border-slate-700/80 overflow-hidden animate-in zoom-in-95 duration-200 p-6 flex flex-col items-center text-center mx-4">
             {/* Animated ringing avatar */}
             <div className="relative my-4">
               <div className="absolute -inset-3 rounded-full bg-emerald-500/20 animate-ping" />
@@ -6452,6 +6592,9 @@ function WorkspaceShellContent() {
             <h3 className="font-bold text-lg text-white mt-1">{incomingCall.from.name}</h3>
             <p className="text-xs text-slate-400 mt-1">
               Incoming {incomingCall.isVideo ? 'Video' : 'Audio'} Call...
+            </p>
+            <p className="text-[10px] text-slate-500 mt-2 bg-slate-800/60 px-3 py-1 rounded-full border border-slate-700/50">
+              {incomingCall.isVideo ? 'Camera & Mic permission required' : 'Microphone permission required'}
             </p>
 
             {/* Answer / Decline buttons */}
@@ -6482,10 +6625,18 @@ function WorkspaceShellContent() {
           ACTIVE / OUTGOING CALL OVERLAY
       ───────────────────────────────────────────────────────────── */}
       {(callStatus === 'calling' || callStatus === 'connected') && callPeer && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4 animate-in fade-in duration-200">
-          <div className="w-full max-w-3xl rounded-3xl bg-slate-900 border border-slate-700/80 shadow-2xl overflow-hidden flex flex-col text-white">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-0 sm:p-4 animate-in fade-in duration-200">
+          <div className="w-full h-full sm:h-auto sm:max-w-3xl sm:rounded-3xl bg-slate-900 border sm:border-slate-700/80 shadow-2xl overflow-hidden flex flex-col justify-between sm:justify-start text-white">
+            {/* Dedicated Remote Audio Output - Always mounted & unmuted for crystal-clear bidirectional sound */}
+            <audio
+              ref={remoteAudioRef}
+              autoPlay
+              playsInline
+              style={{ position: 'fixed', top: -9999, left: -9999, width: 1, height: 1, opacity: 0, pointerEvents: 'none' }}
+            />
+
             {/* Call Header */}
-            <div className="px-6 py-4 bg-slate-800/80 border-b border-slate-700/60 flex items-center justify-between">
+            <div className="px-4 sm:px-6 py-3.5 sm:py-4 bg-slate-800/80 border-b border-slate-700/60 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-3">
                 <img
                   src={callPeer.avatarUrl || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
@@ -6528,15 +6679,16 @@ function WorkspaceShellContent() {
             </div>
 
             {/* Media / Video Center Area */}
-            <div className="relative bg-slate-950 min-h-[340px] md:min-h-[420px] flex items-center justify-center overflow-hidden">
+            <div className="relative bg-slate-950 flex-1 sm:flex-initial min-h-[300px] sm:min-h-[380px] md:min-h-[440px] flex items-center justify-center overflow-hidden">
               {callType === 'video' ? (
                 <>
-                  {/* Remote video stream */}
+                  {/* Remote video stream (muted=true so remoteAudioRef outputs clear audio without mobile autoplay blocks) */}
                   <video
                     ref={remoteVideoRef}
                     autoPlay
                     playsInline
-                    className="w-full h-[340px] md:h-[420px] object-cover bg-slate-950"
+                    muted
+                    className="w-full h-full min-h-[300px] sm:h-[380px] md:h-[440px] object-cover bg-slate-950"
                   />
 
                   {/* Ringing placeholder while waiting for answer */}
@@ -6556,7 +6708,7 @@ function WorkspaceShellContent() {
                   )}
 
                   {/* Local video PiP (bottom right) */}
-                  <div className="absolute bottom-4 right-4 w-36 h-24 rounded-xl overflow-hidden border-2 border-indigo-500/80 shadow-2xl bg-slate-900 group">
+                  <div className="absolute bottom-4 right-4 w-28 h-20 sm:w-36 sm:h-24 rounded-xl overflow-hidden border-2 border-indigo-500/80 shadow-2xl bg-slate-900 group">
                     <video
                       ref={localVideoRef}
                       autoPlay
@@ -6597,19 +6749,17 @@ function WorkspaceShellContent() {
                   <p className="text-xs text-slate-400 mt-1">
                     {callStatus === 'calling' ? 'Ringing teammate...' : `Audio Connected • ${formatCallDuration(callDuration)}`}
                   </p>
-                  {/* Hidden audio element for remote stream in audio call */}
-                  <audio ref={remoteVideoRef} autoPlay playsInline />
                 </div>
               )}
             </div>
 
             {/* Call Control Toolbar */}
-            <div className="p-4 bg-slate-800/90 border-t border-slate-700/60 flex items-center justify-center gap-3">
+            <div className="p-3 sm:p-4 bg-slate-800/90 border-t border-slate-700/60 flex items-center justify-center gap-2 sm:gap-3 shrink-0">
               {/* Mic Toggle */}
               <button
                 type="button"
                 onClick={toggleMic}
-                className={`p-3.5 rounded-2xl transition-all shadow-md ${
+                className={`p-3 sm:p-3.5 rounded-2xl transition-all shadow-md ${
                   isMicMuted
                     ? 'bg-rose-500/20 text-rose-400 border border-rose-500/50 hover:bg-rose-500/30'
                     : 'bg-slate-700/80 hover:bg-slate-600 text-slate-200'
@@ -6624,7 +6774,7 @@ function WorkspaceShellContent() {
                 <button
                   type="button"
                   onClick={toggleCamera}
-                  className={`p-3.5 rounded-2xl transition-all shadow-md ${
+                  className={`p-3 sm:p-3.5 rounded-2xl transition-all shadow-md ${
                     isVideoMuted
                       ? 'bg-rose-500/20 text-rose-400 border border-rose-500/50 hover:bg-rose-500/30'
                       : 'bg-slate-700/80 hover:bg-slate-600 text-slate-200'
@@ -6640,7 +6790,7 @@ function WorkspaceShellContent() {
                 <button
                   type="button"
                   onClick={toggleScreenShare}
-                  className={`p-3.5 rounded-2xl transition-all shadow-md ${
+                  className={`p-3 sm:p-3.5 rounded-2xl transition-all shadow-md ${
                     isScreenSharing
                       ? 'bg-indigo-600 text-white'
                       : 'bg-slate-700/80 hover:bg-slate-600 text-slate-200'
@@ -6655,7 +6805,7 @@ function WorkspaceShellContent() {
               <button
                 type="button"
                 onClick={() => cleanupCall(true)}
-                className="flex items-center gap-2 px-6 py-3.5 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-lg shadow-rose-600/30 transition-all hover:scale-102 active:scale-98 ml-2"
+                className="flex items-center gap-1.5 sm:gap-2 px-4 sm:px-6 py-3 sm:py-3.5 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-lg shadow-rose-600/30 transition-all hover:scale-102 active:scale-98 ml-1 sm:ml-2"
               >
                 <PhoneOff className="h-5 w-5" />
                 <span>End Call</span>
