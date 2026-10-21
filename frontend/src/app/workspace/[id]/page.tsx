@@ -2638,14 +2638,37 @@ function WorkspaceShellContent() {
   }
 
   function renderFormattedParagraph(text: string) {
-    const tokens = text.split(/(\s+)/);
+    if (!text) return null;
+
+    // Collect all unique member names sorted by length descending so longer multi-word names match first
+    const memberNames = Array.from(
+      new Set(
+        members
+          .map((m) => m.user?.name?.trim())
+          .filter((n): n is string => Boolean(n && n.length > 0))
+      )
+    ).sort((a, b) => b.length - a.length);
+
+    // Escape regex special chars in names
+    const escapedNames = memberNames
+      .map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('|');
+
+    // Build regex to split text while capturing full name mentions, single-word mentions, channels, and inline code
+    const mentionRegex = escapedNames
+      ? new RegExp(`(@(?:${escapedNames})|#[a-zA-Z0-9_-]+|\`[^\`]+\`|@[a-zA-Z0-9_.-]+)`, 'gi')
+      : /(@[a-zA-Z0-9_.-]+|#[a-zA-Z0-9_-]+|`[^`]+`)/gi;
+
+    const parts = text.split(mentionRegex);
 
     return (
       <p className="text-[14px] leading-relaxed text-slate-800 whitespace-pre-wrap font-normal selection:bg-indigo-500 selection:text-white">
-        {tokens.map((token, i) => {
+        {parts.map((part, i) => {
+          if (!part) return null;
+
           // Inline code check: `code`
-          if (token.startsWith('`') && token.endsWith('`') && token.length > 2) {
-            const innerCode = token.slice(1, -1);
+          if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
+            const innerCode = part.slice(1, -1);
             return (
               <code
                 key={i}
@@ -2656,51 +2679,54 @@ function WorkspaceShellContent() {
             );
           }
 
-          if (token.startsWith('@') && token.length > 1) {
-            const cleanName = token.slice(1).replace(/[.,!?]+$/, '');
-            const punctuation = token.slice(1 + cleanName.length);
-            const isMe = user?.name && user.name.toLowerCase().includes(cleanName.toLowerCase());
+          // Mention check: @name
+          if (part.startsWith('@') && part.length > 1) {
+            const rawName = part.slice(1);
+            const currentUserName = user?.name?.toLowerCase().trim() || '';
+            const rawNameLower = rawName.toLowerCase().trim();
+            const isMe =
+              Boolean(currentUserName) &&
+              (currentUserName === rawNameLower ||
+                currentUserName.includes(rawNameLower) ||
+                rawNameLower.includes(currentUserName) ||
+                (currentUserName.split(' ')[0] && currentUserName.split(' ')[0] === rawNameLower));
 
             return (
-              <React.Fragment key={i}>
-                <span
-                  className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md font-semibold text-xs transition-colors ${
-                    isMe
-                      ? 'bg-amber-100 text-amber-900 border border-amber-300 font-bold shadow-2xs'
-                      : 'bg-indigo-50 text-indigo-700 border border-indigo-200/80 hover:bg-indigo-100/70'
-                  }`}
-                >
-                  @{cleanName}
-                </span>
-                {punctuation}
-              </React.Fragment>
+              <span
+                key={i}
+                className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md font-semibold text-xs transition-colors mx-0.5 ${
+                  isMe
+                    ? 'bg-amber-100 text-amber-900 border border-amber-300 font-bold shadow-2xs'
+                    : 'bg-indigo-50 text-indigo-700 border border-indigo-200/80 hover:bg-indigo-100/70 font-semibold'
+                }`}
+              >
+                @{rawName}
+              </span>
             );
           }
 
-          if (token.startsWith('#') && token.length > 1) {
-            const cleanChannel = token.slice(1).replace(/[.,!?]+$/, '');
-            const punctuation = token.slice(1 + cleanChannel.length);
+          // Channel hashtag check: #channel
+          if (part.startsWith('#') && part.length > 1) {
+            const cleanChannel = part.slice(1);
             const channelExists = channels.some((c) => c.name.toLowerCase() === cleanChannel.toLowerCase());
 
             return (
-              <React.Fragment key={i}>
-                <button
-                  type="button"
-                  onClick={() => channelExists && handleSwitchChannelByName(cleanChannel)}
-                  className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md font-semibold text-xs transition-colors ${
-                    channelExists
-                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/80 hover:bg-emerald-100 cursor-pointer'
-                      : 'text-indigo-600 font-medium'
-                  }`}
-                >
-                  #{cleanChannel}
-                </button>
-                {punctuation}
-              </React.Fragment>
+              <button
+                key={i}
+                type="button"
+                onClick={() => channelExists && handleSwitchChannelByName(cleanChannel)}
+                className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md font-semibold text-xs transition-colors mx-0.5 ${
+                  channelExists
+                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/80 hover:bg-emerald-100 cursor-pointer'
+                    : 'text-indigo-600 font-medium'
+                }`}
+              >
+                #{cleanChannel}
+              </button>
             );
           }
 
-          return <span key={i}>{token}</span>;
+          return <span key={i}>{part}</span>;
         })}
       </p>
     );
@@ -4312,9 +4338,15 @@ function WorkspaceShellContent() {
                       const groupedReactions = groupReactions(msg.reactions);
                       const repliesCount = msg._count?.replies || 0;
 
-                      const isMentioned =
-                        user?.name &&
-                        msg.content.toLowerCase().includes('@' + user.name.toLowerCase());
+                      const userFirstName = user?.name ? user.name.split(' ')[0].toLowerCase() : '';
+                      const userFullName = user?.name ? user.name.toLowerCase() : '';
+                      const isMentioned = Boolean(
+                        user &&
+                        (
+                          (userFullName && msg.content.toLowerCase().includes('@' + userFullName)) ||
+                          (userFirstName && userFirstName.length >= 2 && msg.content.toLowerCase().includes('@' + userFirstName))
+                        )
+                      );
 
                       return (
                         <div
@@ -4330,10 +4362,17 @@ function WorkspaceShellContent() {
                               : activeThreadParent?.id === msg.id
                               ? 'bg-indigo-50/60 border border-indigo-200/90'
                               : isMentioned
-                              ? 'bg-amber-50/30 border-l-4 border-l-amber-500 shadow-2xs'
+                              ? 'bg-amber-50/40 border border-amber-200/80 shadow-2xs'
                               : ''
                           }`}
                         >
+                          {/* Sleek straight vertical accent bar for mentions (fixes curved border glitch) */}
+                          {isMentioned && (
+                            <span
+                              aria-hidden="true"
+                              className="absolute left-0.5 top-2 bottom-2 w-1 bg-amber-500 rounded-full"
+                            />
+                          )}
                           {/* Modern Floating Action Bar */}
                           {hoveredMessageId === msg.id && (
                             <div className="absolute right-4 -top-3.5 z-10 flex items-center gap-1 rounded-xl border border-slate-200/90 bg-white/95 backdrop-blur-md px-2 py-1 shadow-lg text-slate-600">
