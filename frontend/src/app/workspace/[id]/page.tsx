@@ -4362,17 +4362,10 @@ function WorkspaceShellContent() {
                               : activeThreadParent?.id === msg.id
                               ? 'bg-indigo-50/60 border border-indigo-200/90'
                               : isMentioned
-                              ? 'bg-amber-50/40 border border-amber-200/80 shadow-2xs'
+                              ? 'bg-amber-50/40'
                               : ''
                           }`}
                         >
-                          {/* Sleek straight vertical accent bar for mentions (fixes curved border glitch) */}
-                          {isMentioned && (
-                            <span
-                              aria-hidden="true"
-                              className="absolute left-0.5 top-2 bottom-2 w-1 bg-amber-500 rounded-full"
-                            />
-                          )}
                           {/* Modern Floating Action Bar */}
                           {hoveredMessageId === msg.id && (
                             <div className="absolute right-4 -top-3.5 z-10 flex items-center gap-1 rounded-xl border border-slate-200/90 bg-white/95 backdrop-blur-md px-2 py-1 shadow-lg text-slate-600">
@@ -4479,11 +4472,6 @@ function WorkspaceShellContent() {
                                 {msg.isEdited && (
                                   <span className="text-[10px] text-slate-400 italic font-normal" title="Edited message">
                                     (edited)
-                                  </span>
-                                )}
-                                {isMentioned && (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.2 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
-                                    <Sparkles className="h-2.5 w-2.5 text-amber-700" /> Mentioned you
                                   </span>
                                 )}
                               </div>
