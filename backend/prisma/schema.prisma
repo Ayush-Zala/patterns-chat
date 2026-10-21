@@ -1,0 +1,243 @@
+// TeamFlow Prisma Schema
+// Module 5: Direct Messages (DMs) & User Presence
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MemberRole {
+  OWNER
+  ADMIN
+  MEMBER
+  GUEST
+}
+
+enum PresenceStatus {
+  ONLINE
+  AWAY
+  OFFLINE
+}
+
+model User {
+  id           String            @id @default(uuid())
+  email        String            @unique
+  password     String
+  name         String
+  avatarUrl    String?
+  status       String?           @default("Active")
+  presence     PresenceStatus    @default(ONLINE)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  ownedWorkspaces        Workspace[]       @relation("WorkspaceOwner")
+  workspaceMembers       WorkspaceMember[]
+  createdChannels        Channel[]         @relation("ChannelCreator")
+  messages               Message[]
+  pinnedMessages         Message[]         @relation("PinnedMessages")
+  reactions              Reaction[]
+  conversationsInitiated Conversation[]    @relation("ConversationInitiator")
+  conversationsReceived  Conversation[]    @relation("ConversationRecipient")
+  directMessages         DirectMessage[]
+  pinnedDirectMessages   DirectMessage[]   @relation("PinnedDirectMessages")
+  directMessageReactions DirectMessageReaction[]
+  notifications          Notification[]    @relation("UserNotifications")
+  triggeredNotifications Notification[]    @relation("ActorNotifications")
+  channelMemberships     ChannelMember[]
+
+  @@map("users")
+}
+
+model Workspace {
+  id          String            @id @default(uuid())
+  name        String
+  slug        String            @unique
+  joinCode    String            @unique @default(uuid())
+  ownerId     String
+  owner       User              @relation("WorkspaceOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  members       WorkspaceMember[]
+  channels      Channel[]
+  conversations Conversation[]
+  notifications Notification[]
+
+  @@map("workspaces")
+}
+
+model WorkspaceMember {
+  id          String      @id @default(uuid())
+  workspaceId String
+  userId      String
+  role        MemberRole  @default(MEMBER)
+  joinedAt    DateTime    @default(now())
+
+  workspace   Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@map("workspace_members")
+}
+
+model Channel {
+  id          String      @id @default(uuid())
+  name        String
+  topic       String?
+  isPrivate   Boolean     @default(false)
+  workspaceId String
+  workspace   Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdById String
+  createdBy   User        @relation("ChannelCreator", fields: [createdById], references: [id], onDelete: Cascade)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  messages    Message[]
+  members     ChannelMember[]
+
+  @@unique([workspaceId, name])
+  @@map("channels")
+}
+
+model ChannelMember {
+  id        String   @id @default(uuid())
+  channelId String
+  channel   Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  joinedAt  DateTime @default(now())
+
+  @@unique([channelId, userId])
+  @@map("channel_members")
+}
+
+model Message {
+  id          String        @id @default(uuid())
+  content     String        @db.Text
+  channelId   String
+  channel     Channel       @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parentId    String?
+  parent      Message?      @relation("ThreadReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies     Message[]     @relation("ThreadReplies")
+  reactions   Reaction[]
+  attachments Attachment[]
+  isPinned    Boolean       @default(false)
+  pinnedAt    DateTime?
+  pinnedById  String?
+  pinnedBy    User?         @relation("PinnedMessages", fields: [pinnedById], references: [id], onDelete: SetNull)
+  isEdited    Boolean       @default(false)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([channelId, createdAt])
+  @@index([channelId, isPinned])
+  @@map("messages")
+}
+
+model Reaction {
+  id        String   @id @default(uuid())
+  emoji     String
+  messageId String
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([messageId, userId, emoji])
+  @@map("reactions")
+}
+
+model Conversation {
+  id          String   @id @default(uuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  userOneId   String
+  userOne     User     @relation("ConversationInitiator", fields: [userOneId], references: [id], onDelete: Cascade)
+  userTwoId   String
+  userTwo     User     @relation("ConversationRecipient", fields: [userTwoId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  directMessages DirectMessage[]
+
+  @@unique([workspaceId, userOneId, userTwoId])
+  @@map("conversations")
+}
+
+model DirectMessage {
+  id             String                  @id @default(uuid())
+  content        String                  @db.Text
+  conversationId String
+  conversation   Conversation            @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  attachments    Attachment[]
+  reactions      DirectMessageReaction[]
+  isPinned       Boolean                 @default(false)
+  pinnedAt       DateTime?
+  pinnedById     String?
+  pinnedBy       User?                   @relation("PinnedDirectMessages", fields: [pinnedById], references: [id], onDelete: SetNull)
+  isEdited       Boolean                 @default(false)
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+
+  @@index([conversationId, createdAt])
+  @@index([conversationId, isPinned])
+  @@map("direct_messages")
+}
+
+model DirectMessageReaction {
+  id              String        @id @default(uuid())
+  emoji           String
+  directMessageId String
+  directMessage   DirectMessage @relation(fields: [directMessageId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt       DateTime      @default(now())
+
+  @@unique([directMessageId, userId, emoji])
+  @@map("direct_message_reactions")
+}
+
+model Attachment {
+  id              String         @id @default(uuid())
+  fileName        String
+  fileUrl         String
+  fileType        String
+  fileSize        Float
+  messageId       String?
+  message         Message?       @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  directMessageId String?
+  directMessage   DirectMessage? @relation(fields: [directMessageId], references: [id], onDelete: Cascade)
+  createdAt       DateTime       @default(now())
+
+  @@map("attachments")
+}
+
+model Notification {
+  id             String    @id @default(uuid())
+  workspaceId    String
+  workspace      Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User      @relation("UserNotifications", fields: [userId], references: [id], onDelete: Cascade)
+  actorId        String
+  actor          User      @relation("ActorNotifications", fields: [actorId], references: [id], onDelete: Cascade)
+  type           String    // MENTION, REACTION, DIRECT_MESSAGE, THREAD_REPLY, PIN
+  title          String
+  body           String
+  channelId      String?
+  conversationId String?
+  messageId      String?
+  isRead         Boolean   @default(false)
+  createdAt      DateTime  @default(now())
+
+  @@index([userId, isRead, createdAt])
+  @@index([workspaceId, createdAt])
+  @@map("notifications")
+}
