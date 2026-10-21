@@ -1,4 +1,4 @@
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
@@ -7,7 +7,7 @@ COPY backend/package*.json ./
 COPY backend/prisma ./prisma/
 
 # Install dependencies and generate prisma client
-RUN npm ci
+RUN npm install
 RUN npx prisma generate
 
 # Copy backend source code and build
@@ -15,7 +15,7 @@ COPY backend/ .
 RUN npm run build
 
 # Production stage
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 
 WORKDIR /app
 
@@ -27,7 +27,7 @@ COPY backend/package*.json ./
 COPY backend/prisma ./prisma/
 
 # Install production dependencies only
-RUN npm ci --omit=dev
+RUN npm install --omit=dev
 RUN npx prisma generate
 
 # Copy built artifacts from builder
