@@ -23,6 +23,13 @@ export class MessagesGateway implements OnGatewayConnection, OnGatewayDisconnect
 
   private readonly logger = new Logger(MessagesGateway.name);
 
+  // Active multi-participant team meeting rooms: meetingId -> Map<socketId, Participant>
+  private activeMeetingRooms = new Map<
+    string,
+    Map<string, { socketId: string; user: { id: string; name: string; avatarUrl?: string } }>
+  >();
+  private socketToMeetingMap = new Map<string, string>();
+
   constructor(
     private readonly messagesService: MessagesService,
     private readonly jwtService: JwtService,
@@ -34,6 +41,21 @@ export class MessagesGateway implements OnGatewayConnection, OnGatewayDisconnect
 
   handleDisconnect(client: Socket) {
     this.logger.log(`🔌 Client disconnected: ${client.id}`);
+    const meetingId = this.socketToMeetingMap.get(client.id);
+    if (meetingId) {
+      this.leaveMeetingInternal(client, meetingId);
+    }
+  }
+
+  emitForceLogout(userId: string, newSessionId: string) {
+    if (this.server) {
+      const room = `user:${userId}`;
+      this.server.to(room).emit('force_logout', {
+        reason: 'Account was logged into from another device.',
+        newSessionId,
+      });
+      this.logger.log(`🚪 Emitted force_logout to room ${room} for new session ${newSessionId}`);
+    }
   }
 
   @SubscribeMessage('join_channel')
@@ -411,4 +433,167 @@ export class MessagesGateway implements OnGatewayConnection, OnGatewayDisconnect
       this.logger.log(`⏺️ Call recording state (${data.isRecording}) forwarded to user ${data.toUserId}`);
     }
   }
+
+  // ─────────────────────────────────────────────────────────────
+  // Multi-party Group Team Meeting Signaling (WebRTC Mesh 3-16+ users)
+  // ─────────────────────────────────────────────────────────────
+  @SubscribeMessage('join_team_meeting')
+  handleJoinTeamMeeting(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      meetingId: string;
+      channelId?: string;
+      workspaceId?: string;
+      user: { id: string; name: string; avatarUrl?: string };
+    },
+  ) {
+    if (!data?.meetingId || !data?.user) return;
+
+    const { meetingId, user, channelId, workspaceId } = data;
+    const room = `meeting:${meetingId}`;
+    client.join(room);
+
+    if (!this.activeMeetingRooms.has(meetingId)) {
+      this.activeMeetingRooms.set(meetingId, new Map());
+    }
+
+    const roomParticipants = this.activeMeetingRooms.get(meetingId)!;
+    const existingList = Array.from(roomParticipants.values());
+
+    roomParticipants.set(client.id, {
+      socketId: client.id,
+      user,
+    });
+    this.socketToMeetingMap.set(client.id, meetingId);
+
+    // Send existing peers to joining client
+    client.emit('meeting_existing_participants', {
+      meetingId,
+      participants: existingList,
+    });
+
+    // Notify other peers in room that a new peer joined
+    client.to(room).emit('user_joined_team_meeting', {
+      meetingId,
+      socketId: client.id,
+      user,
+    });
+
+    if (channelId) {
+      this.server.to(`channel:${channelId}`).emit('channel_meeting_status', {
+        meetingId,
+        channelId,
+        isActive: true,
+        participantCount: roomParticipants.size,
+      });
+    }
+    if (workspaceId) {
+      this.server.to(`workspace:${workspaceId}`).emit('workspace_meeting_status', {
+        meetingId,
+        isActive: true,
+        participantCount: roomParticipants.size,
+      });
+    }
+
+    this.logger.log(`👥 User ${user.name} (${client.id}) joined meeting ${meetingId}. Total in room: ${roomParticipants.size}`);
+  }
+
+  @SubscribeMessage('meeting_peer_signal')
+  handleMeetingPeerSignal(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      toSocketId: string;
+      meetingId: string;
+      signal: any;
+      fromUser?: { id: string; name: string; avatarUrl?: string };
+    },
+  ) {
+    if (data?.toSocketId && data?.signal) {
+      this.server.to(data.toSocketId).emit('meeting_peer_signal', {
+        fromSocketId: client.id,
+        meetingId: data.meetingId,
+        signal: data.signal,
+        fromUser: data.fromUser,
+      });
+    }
+  }
+
+  @SubscribeMessage('meeting_media_toggle')
+  handleMeetingMediaToggle(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      meetingId: string;
+      isMicMuted?: boolean;
+      isVideoMuted?: boolean;
+      isScreenSharing?: boolean;
+    },
+  ) {
+    if (data?.meetingId) {
+      const room = `meeting:${data.meetingId}`;
+      client.to(room).emit('peer_media_toggle', {
+        socketId: client.id,
+        ...data,
+      });
+    }
+  }
+
+  @SubscribeMessage('leave_team_meeting')
+  handleLeaveTeamMeeting(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      meetingId: string;
+      channelId?: string;
+      workspaceId?: string;
+    },
+  ) {
+    if (data?.meetingId) {
+      this.leaveMeetingInternal(client, data.meetingId, data.channelId, data.workspaceId);
+    }
+  }
+
+  private leaveMeetingInternal(client: Socket, meetingId: string, channelId?: string, workspaceId?: string) {
+    const room = `meeting:${meetingId}`;
+    client.leave(room);
+    this.socketToMeetingMap.delete(client.id);
+
+    const roomParticipants = this.activeMeetingRooms.get(meetingId);
+    if (roomParticipants) {
+      const leavingUser = roomParticipants.get(client.id);
+      roomParticipants.delete(client.id);
+
+      client.to(room).emit('user_left_team_meeting', {
+        meetingId,
+        socketId: client.id,
+        userId: leavingUser?.user?.id,
+      });
+
+      const remaining = roomParticipants.size;
+      this.logger.log(`🚪 User left group meeting ${meetingId}. Remaining: ${remaining}`);
+
+      if (remaining === 0) {
+        this.activeMeetingRooms.delete(meetingId);
+      }
+
+      if (channelId) {
+        this.server.to(`channel:${channelId}`).emit('channel_meeting_status', {
+          meetingId,
+          channelId,
+          isActive: remaining > 0,
+          participantCount: remaining,
+        });
+      }
+      if (workspaceId) {
+        this.server.to(`workspace:${workspaceId}`).emit('workspace_meeting_status', {
+          meetingId,
+          isActive: remaining > 0,
+          participantCount: remaining,
+        });
+      }
+    }
+  }
 }
+

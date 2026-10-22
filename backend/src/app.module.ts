@@ -11,6 +11,8 @@ import { ConversationsModule } from './conversations/conversations.module.js';
 import { UploadsModule } from './uploads/uploads.module.js';
 import { NotificationsModule } from './notifications/notifications.module.js';
 import { SearchModule } from './search/search.module.js';
+import { RecordingsModule } from './recordings/recordings.module.js';
+import { MeetingsModule } from './meetings/meetings.module.js';
 import configuration from './config/configuration.js';
 
 @Module({
@@ -27,6 +29,8 @@ import configuration from './config/configuration.js';
     UploadsModule,
     NotificationsModule,
     SearchModule,
+    RecordingsModule,
+    MeetingsModule,
   ],
   controllers: [AppController],
   providers: [AppService, PrismaService],

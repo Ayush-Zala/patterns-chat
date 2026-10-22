@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User, Workspace, AuthResponse } from '@/types/auth';
+import { getSocket } from './socket';
 
 interface AuthContextType {
   user: User | null;
@@ -49,11 +50,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // Single active device enforcement: listen for force_logout broadcast
+  useEffect(() => {
+    if (!user?.id) return;
+    const socket = getSocket();
+    socket.emit('join_user', { userId: user.id });
+
+    const handleForceLogout = (data: { reason?: string }) => {
+      console.warn('⚠️ Force logout received from server:', data);
+      logout();
+      if (typeof window !== 'undefined') {
+        window.location.href = '/login?reason=another_device';
+      }
+    };
+
+    socket.on('force_logout', handleForceLogout);
+    return () => {
+      socket.off('force_logout', handleForceLogout);
+    };
+  }, [user?.id]);
+
   async function fetchWorkspaces(authToken: string, retryCount = 0) {
     try {
       const res = await fetch(`${API_URL}/workspaces`, {
         headers: { Authorization: `Bearer ${authToken}` },
       });
+      if (res.status === 401) {
+        logout();
+        if (typeof window !== 'undefined') {
+          window.location.href = '/login?reason=another_device';
+        }
+        return;
+      }
       if (res.ok) {
         const data = await res.json();
         setWorkspaces(data);

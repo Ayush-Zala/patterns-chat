@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Patch,
   Delete,
   Body,
   Param,
@@ -12,6 +13,7 @@ import { CreateWorkspaceDto } from './dto/create-workspace.dto.js';
 import { JoinWorkspaceDto } from './dto/join-workspace.dto.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { CurrentUser } from '../auth/current-user.decorator.js';
+import { MemberRole } from '@prisma/client';
 
 @UseGuards(JwtAuthGuard)
 @Controller('workspaces')
@@ -60,8 +62,19 @@ export class WorkspacesController {
     @CurrentUser() user: { id: string },
     @Param('id') id: string,
     @Body('email') email: string,
+    @Body('role') role?: MemberRole,
   ) {
-    return this.workspacesService.addMemberByEmail(user.id, id, email);
+    return this.workspacesService.addMemberByEmail(user.id, id, email, role);
+  }
+
+  @Patch(':id/members/:memberId/role')
+  async updateMemberRole(
+    @CurrentUser() user: { id: string },
+    @Param('id') id: string,
+    @Param('memberId') memberId: string,
+    @Body('role') role: MemberRole,
+  ) {
+    return this.workspacesService.updateMemberRole(user.id, id, memberId, role);
   }
 
   @Delete(':id/members/:memberId')

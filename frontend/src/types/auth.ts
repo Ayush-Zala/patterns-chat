@@ -26,9 +26,11 @@ export interface Workspace {
   };
 }
 
+export type WorkspaceRole = 'OWNER' | 'ADMIN' | 'MANAGER' | 'TEAM_LEAD' | 'MEMBER' | 'GUEST';
+
 export interface WorkspaceMember {
   id: string;
-  role: 'OWNER' | 'ADMIN' | 'MEMBER' | 'GUEST';
+  role: WorkspaceRole;
   joinedAt: string;
   user: {
     id: string;
@@ -46,3 +48,45 @@ export interface AuthResponse {
   user: User;
   accessToken: string;
 }
+
+export interface MeetingParticipant {
+  id: string;
+  meetingId: string;
+  userId: string;
+  status: 'INVITED' | 'ACCEPTED' | 'DECLINED';
+  user?: {
+    id: string;
+    name: string;
+    email: string;
+    avatarUrl?: string;
+    status?: string;
+    presence?: 'ONLINE' | 'AWAY' | 'OFFLINE';
+  };
+}
+
+export interface Meeting {
+  id: string;
+  title: string;
+  description?: string;
+  scheduledAt: string;
+  duration: number;
+  meetingLink?: string;
+  workspaceId: string;
+  channelId?: string;
+  hostId: string;
+  status: 'SCHEDULED' | 'LIVE' | 'COMPLETED' | 'CANCELLED';
+  host?: {
+    id: string;
+    name: string;
+    email: string;
+    avatarUrl?: string;
+  };
+  channel?: {
+    id: string;
+    name: string;
+    isPrivate?: boolean;
+  };
+  participants?: MeetingParticipant[];
+  createdAt: string;
+}
+

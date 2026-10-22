@@ -12,7 +12,19 @@ export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [deviceKickoutNotice, setDeviceKickoutNotice] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('reason') === 'another_device') {
+        setDeviceKickoutNotice(
+          'Single Device Session: Your account was logged into on another device. For security, only one active device is allowed at a time.',
+        );
+      }
+    }
+  }, []);
 
   useEffect(() => {
     if (!loading && user) {
@@ -23,6 +35,7 @@ export default function LoginPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setDeviceKickoutNotice(null);
     setIsSubmitting(true);
 
     try {
@@ -65,6 +78,16 @@ export default function LoginPage() {
 
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md px-4 sm:px-0 relative z-10">
         <div className="bg-white/90 backdrop-blur-xl py-8 px-6 shadow-xl shadow-slate-200/50 rounded-3xl border border-slate-200/80 sm:px-10">
+          {deviceKickoutNotice && (
+            <div className="mb-5 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-xs text-amber-800 flex items-start gap-3 shadow-xs">
+              <AlertCircle className="h-4 w-4 shrink-0 text-amber-600 mt-0.5" />
+              <div className="flex-1">
+                <p className="font-semibold">{deviceKickoutNotice}</p>
+                <p className="text-[11px] text-amber-700 mt-0.5">Please sign in again to use this device.</p>
+              </div>
+            </div>
+          )}
+
           {error && (
             <div className="mb-5 rounded-2xl border border-rose-200 bg-rose-50 p-3.5 text-xs text-rose-700 flex items-center gap-3">
               <AlertCircle className="h-4 w-4 shrink-0 text-rose-500" />

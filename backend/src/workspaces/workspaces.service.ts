@@ -275,11 +275,34 @@ export class WorkspacesService {
       throw new ForbiddenException('You are not a member of this workspace');
     }
 
-    const isOwner = currentMember.role === MemberRole.OWNER || workspace.ownerId === currentUserId;
-    const isAdmin = currentMember.role === MemberRole.ADMIN;
+    const roleWeight: Record<MemberRole, number> = {
+      [MemberRole.OWNER]: 50,
+      [MemberRole.ADMIN]: 40,
+      [MemberRole.MANAGER]: 30,
+      [MemberRole.TEAM_LEAD]: 20,
+      [MemberRole.MEMBER]: 10,
+      [MemberRole.GUEST]: 0,
+    };
 
-    if (!isOwner && !isAdmin) {
-      throw new ForbiddenException('Only the Workspace Owner can add new members to this workspace');
+    const isOwner = currentMember.role === MemberRole.OWNER || workspace.ownerId === currentUserId;
+    const callerWeight = isOwner ? 50 : (roleWeight[currentMember.role] ?? 0);
+
+    // Minimum role to invite anyone is TEAM_LEAD (weight 20)
+    if (callerWeight < 20) {
+      throw new ForbiddenException('You do not have permission to invite new members to this workspace');
+    }
+
+    const assignedRole = role || MemberRole.MEMBER;
+    const targetRoleWeight = roleWeight[assignedRole] ?? 10;
+
+    // Cannot invite someone directly as OWNER
+    if (assignedRole === MemberRole.OWNER) {
+      throw new ForbiddenException('There can only be one Workspace Owner');
+    }
+
+    // A user can only invite/assign a role up to their own role weight
+    if (!isOwner && targetRoleWeight > callerWeight) {
+      throw new ForbiddenException(`Your role (${currentMember.role}) cannot assign the ${assignedRole} role`);
     }
 
     const targetUser = await this.prisma.user.findUnique({
@@ -314,7 +337,7 @@ export class WorkspacesService {
       data: {
         workspaceId,
         userId: targetUser.id,
-        role: role || MemberRole.MEMBER,
+        role: assignedRole,
       },
       include: {
         user: {
@@ -344,7 +367,7 @@ export class WorkspacesService {
     }
 
     return {
-      message: `${targetUser.name} was successfully added to the workspace`,
+      message: `${targetUser.name} was successfully added as ${assignedRole}`,
       member: {
         id: membership.id,
         role: membership.role,
@@ -354,7 +377,21 @@ export class WorkspacesService {
     };
   }
 
-  async removeMember(currentUserId: string, workspaceId: string, memberIdOrUserId: string) {
+  async updateMemberRole(
+    currentUserId: string,
+    workspaceId: string,
+    memberIdOrUserId: string,
+    newRole: MemberRole,
+  ) {
+    const roleWeight: Record<MemberRole, number> = {
+      [MemberRole.OWNER]: 50,
+      [MemberRole.ADMIN]: 40,
+      [MemberRole.MANAGER]: 30,
+      [MemberRole.TEAM_LEAD]: 20,
+      [MemberRole.MEMBER]: 10,
+      [MemberRole.GUEST]: 0,
+    };
+
     const workspace = await this.prisma.workspace.findUnique({
       where: { id: workspaceId },
       include: {
@@ -378,10 +415,107 @@ export class WorkspacesService {
     }
 
     const isOwner = currentMember.role === MemberRole.OWNER || workspace.ownerId === currentUserId;
-    const isAdmin = currentMember.role === MemberRole.ADMIN;
+    const callerWeight = isOwner ? 50 : (roleWeight[currentMember.role] ?? 0);
 
-    if (!isOwner && !isAdmin) {
-      throw new ForbiddenException('Only the Workspace Owner or Admins can remove members');
+    // Minimum role to change roles is MANAGER (weight 30)
+    if (callerWeight < 30) {
+      throw new ForbiddenException('You do not have permission to manage member roles');
+    }
+
+    const targetMember = workspace.members.find(
+      (m) => m.id === memberIdOrUserId || m.userId === memberIdOrUserId,
+    );
+
+    if (!targetMember) {
+      throw new NotFoundException('Member not found in this workspace');
+    }
+
+    if (targetMember.userId === currentUserId) {
+      throw new ForbiddenException('You cannot modify your own role');
+    }
+
+    if (targetMember.role === MemberRole.OWNER || targetMember.userId === workspace.ownerId) {
+      throw new ForbiddenException('Cannot modify the Workspace Owner role');
+    }
+
+    if (newRole === MemberRole.OWNER) {
+      throw new ForbiddenException('Cannot transfer the Workspace Owner role');
+    }
+
+    const targetCurrentWeight = roleWeight[targetMember.role] ?? 10;
+    const newRoleWeight = roleWeight[newRole] ?? 10;
+
+    // Caller must have higher authority than target's current role (unless OWNER)
+    if (!isOwner && callerWeight <= targetCurrentWeight) {
+      throw new ForbiddenException(`You cannot modify the role of another ${targetMember.role}`);
+    }
+
+    // Caller cannot assign a role higher than their own
+    if (!isOwner && newRoleWeight > callerWeight) {
+      throw new ForbiddenException(`You cannot assign a role (${newRole}) higher than your own (${currentMember.role})`);
+    }
+
+    const updated = await this.prisma.workspaceMember.update({
+      where: { id: targetMember.id },
+      data: { role: newRole },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            avatarUrl: true,
+            status: true,
+            presence: true,
+          },
+        },
+      },
+    });
+
+    return {
+      message: `${targetMember.user.name}'s role was updated to ${newRole}`,
+      member: updated,
+    };
+  }
+
+  async removeMember(currentUserId: string, workspaceId: string, memberIdOrUserId: string) {
+    const roleWeight: Record<MemberRole, number> = {
+      [MemberRole.OWNER]: 50,
+      [MemberRole.ADMIN]: 40,
+      [MemberRole.MANAGER]: 30,
+      [MemberRole.TEAM_LEAD]: 20,
+      [MemberRole.MEMBER]: 10,
+      [MemberRole.GUEST]: 0,
+    };
+
+    const workspace = await this.prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      include: {
+        members: {
+          include: {
+            user: {
+              select: { id: true, name: true, email: true },
+            },
+          },
+        },
+      },
+    });
+
+    if (!workspace) {
+      throw new NotFoundException('Workspace not found');
+    }
+
+    const currentMember = workspace.members.find((m) => m.userId === currentUserId);
+    if (!currentMember) {
+      throw new ForbiddenException('You are not a member of this workspace');
+    }
+
+    const isOwner = currentMember.role === MemberRole.OWNER || workspace.ownerId === currentUserId;
+    const callerWeight = isOwner ? 50 : (roleWeight[currentMember.role] ?? 0);
+
+    // Minimum role to remove a member is TEAM_LEAD (weight 20)
+    if (callerWeight < 20) {
+      throw new ForbiddenException('You do not have permission to remove members from this workspace');
     }
 
     const targetMember = workspace.members.find(
@@ -396,12 +530,15 @@ export class WorkspacesService {
       throw new ForbiddenException('The Workspace Owner cannot be removed from the workspace');
     }
 
-    if (targetMember.role === MemberRole.ADMIN && !isOwner) {
-      throw new ForbiddenException('Only the Workspace Owner can remove an Admin');
-    }
-
     if (targetMember.userId === currentUserId) {
       throw new ForbiddenException('You cannot kick yourself from the workspace');
+    }
+
+    const targetWeight = roleWeight[targetMember.role] ?? 10;
+
+    // Caller must have higher authority than target member to remove them
+    if (!isOwner && callerWeight <= targetWeight) {
+      throw new ForbiddenException(`You do not have permission to remove a ${targetMember.role}`);
     }
 
     await this.prisma.workspaceMember.delete({

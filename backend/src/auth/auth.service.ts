@@ -3,18 +3,24 @@ import {
   ConflictException,
   UnauthorizedException,
   NotFoundException,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import { PrismaService } from '../common/prisma.service.js';
 import { RegisterDto } from './dto/register.dto.js';
 import { LoginDto } from './dto/login.dto.js';
+import { MessagesGateway } from '../messages/messages.gateway.js';
 
 @Injectable()
 export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
+    @Inject(forwardRef(() => MessagesGateway))
+    private readonly messagesGateway: MessagesGateway,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -28,6 +34,7 @@ export class AuthService {
 
     const hashedPassword = await bcrypt.hash(dto.password, 10);
     const avatarUrl = `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(dto.name.trim())}&backgroundColor=4f46e5,7c3aed,9333ea`;
+    const sessionId = crypto.randomUUID();
 
     const user = await this.prisma.user.create({
       data: {
@@ -36,6 +43,7 @@ export class AuthService {
         password: hashedPassword,
         avatarUrl,
         status: 'Active',
+        currentSessionId: sessionId,
       },
       select: {
         id: true,
@@ -50,6 +58,7 @@ export class AuthService {
     const accessToken = this.jwtService.sign({
       sub: user.id,
       email: user.email,
+      sessionId,
     });
 
     return {
@@ -73,9 +82,27 @@ export class AuthService {
       throw new UnauthorizedException('Invalid email or password.');
     }
 
+    const sessionId = crypto.randomUUID();
+
+    // Update current session ID in database
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { currentSessionId: sessionId },
+    });
+
+    // Notify any active sockets on other devices to force logout immediately
+    try {
+      if (this.messagesGateway) {
+        this.messagesGateway.emitForceLogout(user.id, sessionId);
+      }
+    } catch (e) {
+      // Gateway error ignored
+    }
+
     const accessToken = this.jwtService.sign({
       sub: user.id,
       email: user.email,
+      sessionId,
     });
 
     const sanitizedUser = {

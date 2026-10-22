@@ -78,9 +78,32 @@ import {
   Play,
   Pause,
   RotateCcw,
+  Crown,
+  ShieldCheck,
+  Briefcase,
+  User,
+  Eye,
+  Calendar,
+  CalendarDays,
+  ExternalLink,
+  Presentation,
+  LayoutGrid,
+  PictureInPicture,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
-import { Workspace, WorkspaceMember } from '@/types/auth';
+import { Workspace, WorkspaceMember, WorkspaceRole, Meeting } from '@/types/auth';
+import { CalendarView } from '@/components/meetings/CalendarView';
+import { GroupMeetingOverlay } from '@/components/meetings/GroupMeetingOverlay';
+import {
+  ROLE_CONFIGS,
+  ROLE_WEIGHTS,
+  canInviteMembers,
+  getAllowedInviteRoles,
+  canManageMemberRole,
+  canRemoveMember,
+  canEditChannel,
+  canDeleteChannel,
+} from '@/lib/roles';
 import {
   Channel,
   ChannelMemberItem,
@@ -91,7 +114,7 @@ import {
   DirectMessage,
   ConversationParticipant,
   PresenceStatus,
-  Notification,
+  type Notification,
   SearchResult,
 } from '@/types/chat';
 import { getSocket } from '@/lib/socket';
@@ -328,8 +351,90 @@ function WorkspaceShellContent() {
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
-  const [screenFitMode, setScreenFitMode] = useState<'contain' | 'cover'>('contain');
   const [showMobileSidebar, setShowMobileSidebar] = useState(false);
+
+  // Calendar, Team Meeting, Fullscreen & Background Call Notification State
+  const [showCalendarView, setShowCalendarView] = useState(false);
+  const [activeTeamMeeting, setActiveTeamMeeting] = useState<Meeting | null>(null);
+  const [isPiPActive, setIsPiPActive] = useState(false);
+  const [isCallFullscreen, setIsCallFullscreen] = useState(false);
+  const callOverlayContainerRef = useRef<HTMLDivElement | null>(null);
+  const incomingCallNotifRef = useRef<any | null>(null);
+  const tabTitleIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const originalTitleRef = useRef<string>('TeamFlow');
+
+  // Saved Call Recordings in PostgreSQL State
+  interface SavedRecording {
+    id: string;
+    fileName: string;
+    fileUrl: string;
+    fileSize: number;
+    fileType: string;
+    duration: number;
+    isVideo: boolean;
+    workspaceId: string;
+    channelId?: string;
+    conversationId?: string;
+    peerId?: string;
+    createdAt: string;
+    recordedById: string;
+    recordedBy: {
+      id: string;
+      name: string;
+      email: string;
+      avatarUrl?: string;
+    };
+    channel?: {
+      id: string;
+      name: string;
+    };
+  }
+
+  const [workspaceRecordings, setWorkspaceRecordings] = useState<SavedRecording[]>([]);
+  const [showRecordingsModal, setShowRecordingsModal] = useState(false);
+  const [activePlaybackRecording, setActivePlaybackRecording] = useState<SavedRecording | null>(null);
+  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
+  const [screenFitMode, setScreenFitMode] = useState<'cover' | 'contain'>('cover');
+  const wakeLockRef = useRef<any>(null);
+
+  async function loadWorkspaceRecordings() {
+    if (!workspaceId || !token) return;
+    try {
+      const res = await fetch(`${API_URL}/recordings/workspace/${workspaceId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setWorkspaceRecordings(data);
+      }
+    } catch (e) {
+      console.warn('Failed to load workspace recordings:', e);
+    }
+  }
+
+  async function handleDeleteRecording(id: string) {
+    if (!confirm('Are you sure you want to delete this call recording?')) return;
+    try {
+      const res = await fetch(`${API_URL}/recordings/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        setWorkspaceRecordings((prev) => prev.filter((r) => r.id !== id));
+        if (activePlaybackRecording?.id === id) {
+          setActivePlaybackRecording(null);
+        }
+      }
+    } catch (e) {
+      alert('Could not delete recording');
+    }
+  }
+
+  useEffect(() => {
+    if (workspaceId && token) {
+      loadWorkspaceRecordings();
+    }
+  }, [workspaceId, token]);
 
   // Unread Message Badges State for Channels & Direct Messages
   const [unreadChannels, setUnreadChannels] = useState<Record<string, number>>({});
@@ -415,6 +520,8 @@ function WorkspaceShellContent() {
         setShowPinnedDrawer(false);
         setShowNotificationDrawer(false);
         setShowCreateChannelModal(false);
+        setShowEditChannelModal(false);
+        setChannelToDelete(null);
         setShowMembersDrawer(false);
         setShowInviteModal(false);
         setMemberToRemove(null);
@@ -427,6 +534,32 @@ function WorkspaceShellContent() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  // Request Browser Notification permission & check meeting URL param
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      originalTitleRef.current = document.title || 'TeamFlow';
+      if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission().catch(() => {});
+      }
+      const params = new URLSearchParams(window.location.search);
+      const meetingParam = params.get('meeting');
+      if (meetingParam) {
+        setActiveTeamMeeting({
+          id: meetingParam,
+          workspaceId: workspaceId || '',
+          title: 'Scheduled Team Meeting',
+          scheduledAt: new Date().toISOString(),
+          duration: 60,
+          hostId: '',
+          status: 'LIVE' as const,
+          createdAt: new Date().toISOString(),
+          host: { id: '', name: 'Meeting Host', email: '' },
+          participants: [],
+        });
+      }
+    }
+  }, []);
+
   // New Channel Form
   const [newChannelName, setNewChannelName] = useState('');
   const [newChannelTopic, setNewChannelTopic] = useState('');
@@ -434,6 +567,20 @@ function WorkspaceShellContent() {
   const [newChannelSelectedMembers, setNewChannelSelectedMembers] = useState<string[]>([]);
   const [channelCreating, setChannelCreating] = useState(false);
   const [channelError, setChannelError] = useState<string | null>(null);
+
+  // Edit & Delete Channel State
+  const [showEditChannelModal, setShowEditChannelModal] = useState(false);
+  const [channelToEdit, setChannelToEdit] = useState<Channel | null>(null);
+  const [editChannelName, setEditChannelName] = useState('');
+  const [editChannelTopic, setEditChannelTopic] = useState('');
+  const [editChannelIsPrivate, setEditChannelIsPrivate] = useState(false);
+  const [editChannelLoading, setEditChannelLoading] = useState(false);
+  const [editChannelError, setEditChannelError] = useState<string | null>(null);
+  const [channelToDelete, setChannelToDelete] = useState<Channel | null>(null);
+  const [deleteChannelLoading, setDeleteChannelLoading] = useState(false);
+
+  // Invite Role Selection State
+  const [inviteRole, setInviteRole] = useState<WorkspaceRole>('MEMBER');
 
   // Active Channel Members & Management State
   const [activeChannelMembers, setActiveChannelMembers] = useState<ChannelMemberItem[]>([]);
@@ -882,14 +1029,37 @@ function WorkspaceShellContent() {
     handleStartCall({ id: peerId, name: peerName, avatarUrl: peerAvatar }, isVideo);
   }
 
-  // STUN Configuration for WebRTC P2P
+  // High-reliability global STUN servers & ICE pool for crystal-clear WebRTC
   const RTC_CONFIG: RTCConfiguration = {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
       { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun3.l.google.com:19302' },
+      { urls: 'stun:stun4.l.google.com:19302' },
+      { urls: 'stun:global.stun.twilio.com:3478' },
     ],
+    iceCandidatePoolSize: 10,
   };
+
+  async function requestWakeLock() {
+    try {
+      if (typeof navigator !== 'undefined' && 'wakeLock' in navigator && !wakeLockRef.current) {
+        wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+      }
+    } catch (e) {
+      console.warn('Wake lock not granted:', e);
+    }
+  }
+
+  function releaseWakeLock() {
+    if (wakeLockRef.current) {
+      try {
+        wakeLockRef.current.release();
+      } catch (e) {}
+      wakeLockRef.current = null;
+    }
+  }
 
   // Ringtone Sounds
   function startOutgoingRingtone() {
@@ -934,22 +1104,22 @@ function WorkspaceShellContent() {
         if (!ringtoneAudioCtxRef.current) return;
         if (ctx.state === 'suspended') ctx.resume();
         const now = ctx.currentTime;
-        [523.25, 659.25, 783.99].forEach((freq, i) => {
+        [523.25, 659.25, 783.99, 1046.5].forEach((freq, i) => {
           const osc = ctx.createOscillator();
           const gain = ctx.createGain();
           osc.type = 'sine';
           osc.frequency.setValueAtTime(freq, now + i * 0.12);
-          gain.gain.setValueAtTime(0.09, now + i * 0.12);
-          gain.gain.exponentialRampToValueAtTime(0.0001, now + i * 0.12 + 0.35);
+          gain.gain.setValueAtTime(0.22, now + i * 0.12);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + i * 0.12 + 0.4);
           osc.connect(gain);
           gain.connect(ctx.destination);
           osc.start(now + i * 0.12);
-          osc.stop(now + i * 0.12 + 0.35);
+          osc.stop(now + i * 0.12 + 0.4);
         });
       };
 
       playChime();
-      ringtoneIntervalRef.current = setInterval(playChime, 2500);
+      ringtoneIntervalRef.current = setInterval(playChime, 2200);
     } catch (e) {
       console.warn('Incoming ringtone error:', e);
     }
@@ -1015,25 +1185,28 @@ function WorkspaceShellContent() {
     return stream;
   }
 
-  async function getMediaStream(isVideo: boolean): Promise<MediaStream> {
+  async function getMediaStream(isVideo: boolean, customFacing: 'user' | 'environment' = facingMode): Promise<MediaStream> {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       alert('Media devices not supported in this browser. Please ensure you are using HTTPS or a modern browser like Chrome/Safari.');
       throw new Error('getUserMedia not supported');
     }
 
+    // High Definition Audio with acoustic echo cancellation, noise suppression & auto gain
     const audioConstraints: MediaTrackConstraints = {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
+      echoCancellation: { ideal: true },
+      noiseSuppression: { ideal: true },
+      autoGainControl: { ideal: true },
+      sampleRate: { ideal: 48000 },
+      channelCount: { ideal: 1 },
     };
 
     if (isVideo) {
-      // 1. Try high-definition user-facing camera first
+      // 1. Try high-definition user-facing / selected camera first
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: audioConstraints,
           video: {
-            facingMode: 'user',
+            facingMode: customFacing,
             width: { ideal: 1280, max: 1920 },
             height: { ideal: 720, max: 1080 },
           },
@@ -1103,8 +1276,70 @@ function WorkspaceShellContent() {
     }
   }
 
+  async function flipCamera() {
+    if (!hasLocalCamera || callStatus === 'idle') return;
+    const newFacing = facingMode === 'user' ? 'environment' : 'user';
+    setFacingMode(newFacing);
+
+    try {
+      let newStream: MediaStream;
+      try {
+        newStream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { exact: newFacing },
+            width: { ideal: 1280, max: 1920 },
+            height: { ideal: 720, max: 1080 },
+          },
+        });
+      } catch {
+        newStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: newFacing },
+        });
+      }
+
+      const newTrack = newStream.getVideoTracks()[0];
+      if (newTrack) {
+        if (localStreamRef.current) {
+          const oldTrack = localStreamRef.current.getVideoTracks()[0];
+          if (oldTrack) {
+            oldTrack.stop();
+            localStreamRef.current.removeTrack(oldTrack);
+          }
+          localStreamRef.current.addTrack(newTrack);
+        }
+
+        if (localVideoRef.current && localStreamRef.current) {
+          localVideoRef.current.srcObject = localStreamRef.current;
+        }
+
+        if (peerConnectionRef.current) {
+          const sender = peerConnectionRef.current.getSenders().find((s) => s.track?.kind === 'video');
+          if (sender) {
+            await sender.replaceTrack(newTrack);
+          }
+        }
+
+        setCallNotificationMsg(`Switched to ${newFacing === 'user' ? 'Front' : 'Back'} Camera`);
+        setTimeout(() => setCallNotificationMsg(null), 3000);
+      }
+    } catch (err: any) {
+      console.warn('Camera flip failed:', err);
+      setCallNotificationMsg('Could not switch camera');
+      setTimeout(() => setCallNotificationMsg(null), 3000);
+    }
+  }
+
   function cleanupCall(notifyPeer: boolean = true) {
     stopRingTone();
+    if (incomingCallNotifRef.current) {
+      incomingCallNotifRef.current.close();
+      incomingCallNotifRef.current = null;
+    }
+    if (tabTitleIntervalRef.current) {
+      clearInterval(tabTitleIntervalRef.current);
+      tabTitleIntervalRef.current = null;
+      document.title = originalTitleRef.current || 'TeamFlow';
+    }
     if (callTimerRef.current) {
       clearInterval(callTimerRef.current);
       callTimerRef.current = null;
@@ -1253,9 +1488,15 @@ function WorkspaceShellContent() {
             }
           };
         } else if (event.track.kind === 'audio') {
+          event.track.enabled = true;
           if (!remoteStreamRef.current.getAudioTracks().some((at) => at.id === event.track.id)) {
             remoteStreamRef.current.addTrack(event.track);
           }
+          event.track.onunmute = () => {
+            if (remoteAudioRef.current) {
+              remoteAudioRef.current.play().catch(() => {});
+            }
+          };
         }
 
         const remoteStream = remoteStreamRef.current;
@@ -1263,9 +1504,11 @@ function WorkspaceShellContent() {
           setHasRemoteVideo(true);
         }
 
+        const streamToPlay = event.streams && event.streams[0] ? event.streams[0] : remoteStream;
+
         // Dedicated mobile and desktop audio player
         if (remoteAudioRef.current) {
-          remoteAudioRef.current.srcObject = remoteStream;
+          remoteAudioRef.current.srcObject = streamToPlay;
           remoteAudioRef.current.volume = 1.0;
           remoteAudioRef.current.play().catch((e) => {
             console.warn('remoteAudioRef play error:', e);
@@ -1307,12 +1550,22 @@ function WorkspaceShellContent() {
   async function handleAcceptCall() {
     if (!incomingCall || !user) return;
     stopRingTone();
+    if (incomingCallNotifRef.current) {
+      incomingCallNotifRef.current.close();
+      incomingCallNotifRef.current = null;
+    }
+    if (tabTitleIntervalRef.current) {
+      clearInterval(tabTitleIntervalRef.current);
+      tabTitleIntervalRef.current = null;
+      document.title = originalTitleRef.current || 'TeamFlow';
+    }
 
     const caller = incomingCall.from;
     const isVideo = incomingCall.isVideo;
     setCallPeer(caller);
     setCallType(isVideo ? 'video' : 'audio');
     setCallStatus('connected');
+    requestWakeLock();
 
     // Unlock/pre-warm mobile audio pipeline on user touch gesture
     if (remoteAudioRef.current) {
@@ -1388,9 +1641,15 @@ function WorkspaceShellContent() {
             }
           };
         } else if (event.track.kind === 'audio') {
+          event.track.enabled = true;
           if (!remoteStreamRef.current.getAudioTracks().some((at) => at.id === event.track.id)) {
             remoteStreamRef.current.addTrack(event.track);
           }
+          event.track.onunmute = () => {
+            if (remoteAudioRef.current) {
+              remoteAudioRef.current.play().catch(() => {});
+            }
+          };
         }
 
         const remoteStream = remoteStreamRef.current;
@@ -1398,9 +1657,11 @@ function WorkspaceShellContent() {
           setHasRemoteVideo(true);
         }
 
+        const streamToPlay = event.streams && event.streams[0] ? event.streams[0] : remoteStream;
+
         // Dedicated mobile and desktop audio player
         if (remoteAudioRef.current) {
-          remoteAudioRef.current.srcObject = remoteStream;
+          remoteAudioRef.current.srcObject = streamToPlay;
           remoteAudioRef.current.volume = 1.0;
           remoteAudioRef.current.play().catch((e) => {
             console.warn('remoteAudioRef play error:', e);
@@ -1445,6 +1706,15 @@ function WorkspaceShellContent() {
 
   function handleDeclineCall() {
     stopRingTone();
+    if (incomingCallNotifRef.current) {
+      incomingCallNotifRef.current.close();
+      incomingCallNotifRef.current = null;
+    }
+    if (tabTitleIntervalRef.current) {
+      clearInterval(tabTitleIntervalRef.current);
+      tabTitleIntervalRef.current = null;
+      document.title = originalTitleRef.current || 'TeamFlow';
+    }
     if (incomingCall?.from?.id) {
       const socket = getSocket();
       socket.emit('decline_call', { toUserId: incomingCall.from.id });
@@ -1568,14 +1838,14 @@ function WorkspaceShellContent() {
         }
       };
 
-      recorder.onstop = () => {
+      recorder.onstop = async () => {
         const hasVideo = recordStream.getVideoTracks().length > 0;
         const blobType = mimeType || (hasVideo ? 'video/webm' : 'audio/webm');
         const blob = new Blob(recordedChunksRef.current, { type: blobType });
         if (blob.size > 0) {
           const url = URL.createObjectURL(blob);
           const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-          const ext = hasVideo ? 'webm' : 'webm';
+          const ext = 'webm';
           const fileName = `${hasVideo ? 'video' : 'call'}-recording-${callPeerRef.current?.name?.replace(/\s+/g, '_') || 'teamflow'}-${timestamp}.${ext}`;
           const duration = recordingDuration;
           const sizeFormatted = formatFileSize(blob.size);
@@ -1589,23 +1859,40 @@ function WorkspaceShellContent() {
             sizeFormatted,
           });
 
-          // Attempt browser download
-          try {
-            const a = document.createElement('a');
-            a.style.display = 'none';
-            a.href = url;
-            a.download = fileName;
-            document.body.appendChild(a);
-            a.click();
-            setTimeout(() => {
-              if (document.body.contains(a)) document.body.removeChild(a);
-            }, 2000);
-          } catch (e) {
-            console.warn('Auto download blocked/failed:', e);
-          }
+          // Upload and save directly in PostgreSQL database via /api/recordings
+          if (token && workspaceId) {
+            try {
+              setCallNotificationMsg('Saving call recording to database...');
+              const formData = new FormData();
+              const file = new (window as any).File([blob], fileName, { type: blobType });
+              formData.append('file', file);
+              formData.append('workspaceId', workspaceId);
+              formData.append('duration', String(duration));
+              formData.append('isVideo', String(hasVideo));
+              if (activeChannel?.id) formData.append('channelId', activeChannel.id);
+              if (activeConversation?.id) formData.append('conversationId', activeConversation.id);
+              if (callPeerRef.current?.id) formData.append('peerId', callPeerRef.current.id);
 
-          setCallNotificationMsg('Recording saved! Preview, download, and share options are ready.');
-          setTimeout(() => setCallNotificationMsg(null), 6000);
+              const recRes = await fetch(`${API_URL}/recordings`, {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                },
+                body: formData,
+              });
+
+              if (recRes.ok) {
+                setCallNotificationMsg('✅ Call recording saved to database & chat!');
+                loadWorkspaceRecordings();
+              } else {
+                setCallNotificationMsg('Recording saved locally! Ready to preview or download.');
+              }
+            } catch (err) {
+              console.warn('Could not auto-save recording to backend:', err);
+              setCallNotificationMsg('Recording saved! Ready to preview or download.');
+            }
+          }
+          setTimeout(() => setCallNotificationMsg(null), 5000);
         }
         if (recordingAudioCtxRef.current) {
           try {
@@ -1969,6 +2256,59 @@ function WorkspaceShellContent() {
       setCallType(data.isVideo ? 'video' : 'audio');
       setCallStatus('incoming');
       startIncomingRingtone();
+
+      // Trigger Cross-App System-Level Desktop Notification (Visible in Windows Action Center & over Excel, Chrome, etc.)
+      try {
+        const callerName = data.from.name || 'Team member';
+        const callKind = data.isVideo ? 'Video' : 'Voice';
+
+        if (typeof window !== 'undefined' && 'Notification' in window) {
+          const triggerNotif = () => {
+            try {
+              if (incomingCallNotifRef.current) {
+                incomingCallNotifRef.current.close();
+              }
+              const notif = new Notification(`📞 Incoming ${callKind} Call: ${callerName}`, {
+                body: `${callerName} is calling you. Click here to answer or view call immediately!`,
+                icon: data.from.avatarUrl || '/icons/call-ringing.png',
+                tag: 'teamflow-incoming-call',
+                requireInteraction: true, // Remains visible on Windows/Mac screen until clicked
+                silent: false,
+              });
+              notif.onclick = () => {
+                window.focus();
+                notif.close();
+              };
+              incomingCallNotifRef.current = notif;
+            } catch (err) {
+              console.warn('System notification launch error:', err);
+            }
+          };
+
+          if (Notification.permission === 'granted') {
+            triggerNotif();
+          } else if (Notification.permission !== 'denied') {
+            Notification.requestPermission().then((perm) => {
+              if (perm === 'granted') triggerNotif();
+            });
+          }
+        }
+
+        // Flashing Tab Title visible when user is in Excel, Word, or other browser tabs
+        if (typeof document !== 'undefined') {
+          if (!originalTitleRef.current) originalTitleRef.current = document.title;
+          if (tabTitleIntervalRef.current) clearInterval(tabTitleIntervalRef.current);
+          let titleToggle = false;
+          tabTitleIntervalRef.current = setInterval(() => {
+            titleToggle = !titleToggle;
+            document.title = titleToggle
+              ? `🔴 CALL FROM ${callerName.toUpperCase()}...`
+              : `📞 Incoming ${callKind} Call!`;
+          }, 700);
+        }
+      } catch (e) {
+        console.warn('Error displaying incoming call notification:', e);
+      }
     }
 
     async function handleCallAccepted(data: { signalData: any }) {
@@ -1985,6 +2325,7 @@ function WorkspaceShellContent() {
         }
       }
       setCallStatus('connected');
+      requestWakeLock();
       if (callTimerRef.current) clearInterval(callTimerRef.current);
       setCallDuration(0);
       callTimerRef.current = setInterval(() => {
@@ -2640,7 +2981,7 @@ function WorkspaceShellContent() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ email: inviteEmail.trim() }),
+        body: JSON.stringify({ email: inviteEmail.trim(), role: inviteRole }),
       });
 
       const data = await res.json();
@@ -2707,6 +3048,7 @@ function WorkspaceShellContent() {
   async function handleSelectDirectMessage(targetUser: ConversationParticipant) {
     if (!token || !user) return;
     setShowMobileSidebar(false);
+    setShowCalendarView(false);
     setActiveChannel(null);
     setActiveThreadParent(null);
     setActiveRecipient(targetUser);
@@ -3346,6 +3688,112 @@ function WorkspaceShellContent() {
     currentWs?.ownerId === user?.id ||
     members.some((m) => m.user?.id === user?.id && m.role === 'OWNER');
 
+  const myWorkspaceMember = members.find((m) => m.user?.id === user?.id);
+  const currentUserRole: WorkspaceRole =
+    isWorkspaceOwner
+      ? 'OWNER'
+      : (myWorkspaceMember?.role || (currentWs?.userRole as WorkspaceRole) || 'MEMBER');
+
+  function openEditChannelModal(ch: Channel) {
+    setChannelToEdit(ch);
+    setEditChannelName(ch.name);
+    setEditChannelTopic(ch.topic || '');
+    setEditChannelIsPrivate(ch.isPrivate || false);
+    setEditChannelError(null);
+    setShowEditChannelModal(true);
+  }
+
+  async function handleUpdateChannel(e: React.FormEvent) {
+    e.preventDefault();
+    const target = channelToEdit || activeChannel;
+    if (!target || !token) return;
+    setEditChannelLoading(true);
+    setEditChannelError(null);
+    try {
+      const res = await fetch(`${API_URL}/channels/${target.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          name: editChannelName.trim(),
+          topic: editChannelTopic.trim(),
+          isPrivate: editChannelIsPrivate,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setChannels((prev) =>
+          prev.map((c) => (c.id === target.id ? { ...c, ...data } : c))
+        );
+        if (activeChannel?.id === target.id) {
+          setActiveChannel((prev) => (prev ? { ...prev, ...data } : null));
+        }
+        setShowEditChannelModal(false);
+        setChannelToEdit(null);
+      } else {
+        setEditChannelError(data.message || 'Could not update channel');
+      }
+    } catch (e) {
+      setEditChannelError('Failed to connect to server');
+    } finally {
+      setEditChannelLoading(false);
+    }
+  }
+
+  async function handleDeleteChannel(channelId: string) {
+    if (!token) return;
+    setDeleteChannelLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/channels/${channelId}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      if (res.ok) {
+        setChannels((prev) => prev.filter((c) => c.id !== channelId));
+        if (activeChannel?.id === channelId) {
+          const remaining = channels.filter((c) => c.id !== channelId);
+          setActiveChannel(remaining.length > 0 ? remaining[0] : null);
+        }
+        setChannelToDelete(null);
+      } else {
+        const data = await res.json();
+        alert(data.message || 'Could not delete channel');
+      }
+    } catch (e) {
+      alert('Failed to delete channel');
+    } finally {
+      setDeleteChannelLoading(false);
+    }
+  }
+
+  async function handleUpdateMemberRole(memberId: string, newRole: WorkspaceRole) {
+    if (!token || !workspaceId) return;
+    try {
+      const res = await fetch(`${API_URL}/workspaces/${workspaceId}/members/${memberId}/role`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ role: newRole }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setMembers((prev) =>
+          prev.map((m) => (m.id === memberId ? { ...m, role: newRole } : m))
+        );
+      } else {
+        alert(data.message || 'Could not update role');
+      }
+    } catch (e) {
+      alert('Failed to update member role');
+    }
+  }
+
   // Format message text with @mentions, #channels, inline code, and code blocks
   function renderMessageContent(content: string) {
     if (!content) return null;
@@ -3754,6 +4202,14 @@ function WorkspaceShellContent() {
 
   return (
     <div className="h-screen w-screen flex overflow-hidden bg-[#F8FAFC] text-slate-900 antialiased font-sans select-none relative">
+      {/* Permanent, Always-Mounted Audio Output Element (never unmounts across call transitions) */}
+      <audio
+        ref={remoteAudioRef}
+        autoPlay
+        playsInline
+        style={{ position: 'fixed', top: -9999, left: -9999, width: 1, height: 1, opacity: 0, pointerEvents: 'none' }}
+      />
+
       {/* Mobile Backdrop Overlay */}
       {showMobileSidebar && (
         <div
@@ -3901,6 +4357,28 @@ function WorkspaceShellContent() {
               </div>
               <span className="text-[10px] font-mono text-slate-400 font-bold">⌘K</span>
             </button>
+
+            {/* Calendar & Team Meetings */}
+            <button
+              onClick={() => {
+                setShowCalendarView(true);
+                setActiveThreadParent(null);
+                setShowMobileSidebar(false);
+              }}
+              className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl font-medium transition-all group ${
+                showCalendarView
+                  ? 'bg-indigo-50 text-indigo-700 font-semibold shadow-2xs border border-indigo-200/80'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <Calendar className={`h-3.5 w-3.5 ${showCalendarView ? 'text-indigo-600' : 'text-slate-400 group-hover:text-indigo-600'} transition-colors`} />
+                <span>Calendar & Meetings</span>
+              </div>
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-indigo-100/80 text-indigo-700">
+                Teams
+              </span>
+            </button>
           </div>
 
           {/* SPACES & CHANNELS */}
@@ -3933,67 +4411,122 @@ function WorkspaceShellContent() {
 
             {!channelsCollapsed && (
               <div className="space-y-0.5 mt-1">
-                {channels.map((ch) => {
-                  const isActive = activeChannel?.id === ch.id && !activeRecipient;
-                  const unreadCount = unreadChannels[ch.id] || 0;
-                  return (
+                {channels.length === 0 ? (
+                  <div className="p-3 text-center bg-slate-50/80 rounded-2xl border border-dashed border-slate-200 my-1">
+                    <p className="text-[11px] font-bold text-slate-700">No channels yet</p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">Create your custom channel</p>
                     <button
-                      key={ch.id}
-                      onClick={() => {
-                        setShowMobileSidebar(false);
-                        setActiveChannel(ch);
-                        setActiveRecipient(null);
-                        setActiveConversation(null);
-                        setActiveThreadParent(null);
-                        setUnreadChannels((prev) => ({ ...prev, [ch.id]: 0 }));
-                      }}
-                      className={`w-full flex items-center justify-between rounded-xl px-2.5 py-1.5 font-medium text-xs transition-all text-left group ${
-                        isActive
-                          ? 'bg-indigo-50/90 text-indigo-900 font-bold border border-indigo-200/80 shadow-2xs'
-                          : unreadCount > 0
-                          ? 'bg-indigo-50/60 text-slate-900 font-bold border border-indigo-100 hover:bg-indigo-50'
-                          : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
-                      }`}
+                      type="button"
+                      onClick={() => setShowCreateChannelModal(true)}
+                      className="mt-2 w-full py-1.5 px-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-[11px] font-bold shadow-xs transition-all flex items-center justify-center gap-1.5"
                     >
-                      <div className="flex items-center gap-2 truncate">
-                        <div
-                          className={`flex h-5 w-5 items-center justify-center rounded-md shrink-0 ${
-                            isActive
-                              ? 'bg-indigo-600 text-white shadow-2xs'
-                              : unreadCount > 0
-                              ? 'bg-indigo-600 text-white shadow-xs'
-                              : 'bg-slate-100 text-slate-500 group-hover:bg-slate-200/70'
-                          }`}
-                        >
-                          {ch.isPrivate ? (
-                            <Lock className="h-2.5 w-2.5 text-amber-500" />
-                          ) : (
-                            <Hash className="h-3 w-3" />
+                      <Plus className="h-3 w-3" />
+                      <span>Create Channel</span>
+                    </button>
+                  </div>
+                ) : (
+                  channels.map((ch) => {
+                    const isActive = activeChannel?.id === ch.id && !activeRecipient;
+                    const unreadCount = unreadChannels[ch.id] || 0;
+                    const chCanEdit = canEditChannel(currentUserRole, ch.createdById === user?.id);
+                    const chCanDelete = canDeleteChannel(currentUserRole, ch.createdById === user?.id);
+
+                    return (
+                      <div
+                        key={ch.id}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => {
+                          setShowMobileSidebar(false);
+                          setShowCalendarView(false);
+                          setActiveChannel(ch);
+                          setActiveRecipient(null);
+                          setActiveConversation(null);
+                          setActiveThreadParent(null);
+                          setUnreadChannels((prev) => ({ ...prev, [ch.id]: 0 }));
+                        }}
+                        className={`w-full flex items-center justify-between rounded-xl px-2.5 py-1.5 font-medium text-xs transition-all text-left cursor-pointer group ${
+                          isActive
+                            ? 'bg-indigo-50/90 text-indigo-900 font-bold border border-indigo-200/80 shadow-2xs'
+                            : unreadCount > 0
+                            ? 'bg-indigo-50/60 text-slate-900 font-bold border border-indigo-100 hover:bg-indigo-50'
+                            : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 truncate min-w-0">
+                          <div
+                            className={`flex h-5 w-5 items-center justify-center rounded-md shrink-0 ${
+                              isActive
+                                ? 'bg-indigo-600 text-white shadow-2xs'
+                                : unreadCount > 0
+                                ? 'bg-indigo-600 text-white shadow-xs'
+                                : 'bg-slate-100 text-slate-500 group-hover:bg-slate-200/70'
+                            }`}
+                          >
+                            {ch.isPrivate ? (
+                              <Lock className="h-2.5 w-2.5 text-amber-500" />
+                            ) : (
+                              <Hash className="h-3 w-3" />
+                            )}
+                          </div>
+                          <span className={`truncate ${unreadCount > 0 && !isActive ? 'font-bold text-slate-900' : ''}`}>{ch.name}</span>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {/* Quick Edit/Delete buttons on hover for authorized users */}
+                          {(chCanEdit || chCanDelete) && (
+                            <div className="hidden group-hover:flex items-center gap-0.5">
+                              {chCanEdit && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openEditChannelModal(ch);
+                                  }}
+                                  className="p-1 rounded-md text-slate-400 hover:text-indigo-600 hover:bg-white/80 transition-colors"
+                                  title="Edit channel"
+                                >
+                                  <Pencil className="h-3 w-3" />
+                                </button>
+                              )}
+                              {chCanDelete && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setChannelToDelete(ch);
+                                  }}
+                                  className="p-1 rounded-md text-slate-400 hover:text-rose-600 hover:bg-white/80 transition-colors"
+                                  title="Delete channel"
+                                >
+                                  <Trash2 className="h-3 w-3" />
+                                </button>
+                              )}
+                            </div>
+                          )}
+
+                          {unreadCount > 0 && !isActive && (
+                            <span className="flex items-center justify-center min-w-[18px] h-[18px] px-1.5 rounded-full bg-gradient-to-r from-indigo-600 to-purple-600 text-[10px] font-black text-white shadow-xs animate-pulse">
+                              {unreadCount > 99 ? '99+' : unreadCount}
+                            </span>
+                          )}
+                          {isActive && (
+                            <span className="h-1.5 w-1.5 rounded-full bg-indigo-600 shadow-xs shrink-0 group-hover:hidden" />
                           )}
                         </div>
-                        <span className={`truncate ${unreadCount > 0 && !isActive ? 'font-bold text-slate-900' : ''}`}>{ch.name}</span>
                       </div>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        {unreadCount > 0 && !isActive && (
-                          <span className="flex items-center justify-center min-w-[18px] h-[18px] px-1.5 rounded-full bg-gradient-to-r from-indigo-600 to-purple-600 text-[10px] font-black text-white shadow-xs animate-pulse">
-                            {unreadCount > 99 ? '99+' : unreadCount}
-                          </span>
-                        )}
-                        {isActive && (
-                          <span className="h-1.5 w-1.5 rounded-full bg-indigo-600 shadow-xs shrink-0" />
-                        )}
-                      </div>
-                    </button>
-                  );
-                })}
+                    );
+                  })
+                )}
 
-                <button
-                  onClick={() => setShowCreateChannelModal(true)}
-                  className="w-full flex items-center gap-2 rounded-xl px-2.5 py-1.5 text-xs font-semibold text-slate-400 hover:text-indigo-600 hover:bg-indigo-50/50 transition-colors"
-                >
-                  <Plus className="h-3 w-3" />
-                  <span>Create channel</span>
-                </button>
+                {channels.length > 0 && (
+                  <button
+                    onClick={() => setShowCreateChannelModal(true)}
+                    className="w-full flex items-center gap-2 rounded-xl px-2.5 py-1.5 text-xs font-semibold text-slate-400 hover:text-indigo-600 hover:bg-indigo-50/50 transition-colors"
+                  >
+                    <Plus className="h-3 w-3" />
+                    <span>Create channel</span>
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -4018,7 +4551,7 @@ function WorkspaceShellContent() {
                 )}
               </button>
               <div className="flex items-center gap-0.5">
-                {isWorkspaceOwner && (
+                {canInviteMembers(currentUserRole) && (
                   <button
                     onClick={() => {
                       setInviteErrorMessage(null);
@@ -4125,7 +4658,7 @@ function WorkspaceShellContent() {
                   );
                 })}
 
-                {isWorkspaceOwner && (
+                {canInviteMembers(currentUserRole) && (
                   <button
                     onClick={() => {
                       setInviteErrorMessage(null);
@@ -4273,7 +4806,26 @@ function WorkspaceShellContent() {
             )}
           </button>
 
-          {activeRecipient ? (
+          {showCalendarView ? (
+            <div className="flex items-center gap-3 min-w-0 shrink">
+              <div className="h-9 w-9 rounded-xl bg-indigo-50 border border-indigo-200/80 flex items-center justify-center text-indigo-600 shadow-2xs shrink-0">
+                <Calendar className="h-5 w-5" />
+              </div>
+              <div className="flex flex-col min-w-0 justify-center">
+                <div className="flex items-center gap-2">
+                  <span className="font-black text-slate-900 text-base tracking-tight leading-tight shrink-0">
+                    Team Calendar & Meetings
+                  </span>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 shrink-0">
+                    Teams & Zoom Mode
+                  </span>
+                </div>
+                <span className="text-xs text-slate-400 truncate font-normal leading-tight mt-0.5">
+                  Schedule, organize team video meetings, and manage participants
+                </span>
+              </div>
+            </div>
+          ) : activeRecipient ? (
             <div className="flex items-center gap-3 min-w-0 shrink">
               <div className="relative shrink-0">
                 <img
@@ -4343,9 +4895,31 @@ function WorkspaceShellContent() {
                   )}
                 </div>
                 <div className="flex flex-col min-w-0 justify-center">
-                  <span className="font-black text-slate-900 text-base tracking-tight leading-tight shrink-0">
-                    {activeChannel?.name}
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-black text-slate-900 text-base tracking-tight leading-tight shrink-0">
+                      {activeChannel?.name}
+                    </span>
+                    {activeChannel && canEditChannel(currentUserRole, activeChannel?.createdById === user?.id) && (
+                      <button
+                        type="button"
+                        onClick={() => openEditChannelModal(activeChannel)}
+                        className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                        title="Edit channel name & topic"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                    {activeChannel && canDeleteChannel(currentUserRole, activeChannel?.createdById === user?.id) && (
+                      <button
+                        type="button"
+                        onClick={() => setChannelToDelete(activeChannel)}
+                        className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+                        title="Delete channel"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
                   {activeChannel?.topic && (
                     <span
                       className="text-xs text-slate-500 truncate max-w-sm md:max-w-md lg:max-w-xl font-normal leading-tight mt-0.5"
@@ -4361,8 +4935,20 @@ function WorkspaceShellContent() {
 
           {/* Header Right Actions & Live Controls - Always 1 single row */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            {/* Back to Chat button when viewing Calendar */}
+            {showCalendarView && (
+              <button
+                type="button"
+                onClick={() => setShowCalendarView(false)}
+                className="flex items-center gap-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-1.5 text-xs font-semibold transition-all shadow-subtle shrink-0"
+              >
+                <X className="h-3.5 w-3.5" />
+                <span>Back to Chat</span>
+              </button>
+            )}
+
             {/* 1-on-1 Audio / Video Call Controls for DM */}
-            {activeRecipient && (
+            {activeRecipient && !showCalendarView && (
               <>
                 <button
                   type="button"
@@ -4385,8 +4971,45 @@ function WorkspaceShellContent() {
               </>
             )}
 
+            {/* Instant Team Meeting Button (Zoom/Teams style for 3-16+ people) */}
+            {!activeRecipient && !showCalendarView && activeChannel && (
+              <button
+                type="button"
+                onClick={() => {
+                  const instantMeeting: Meeting = {
+                    id: `meeting-${activeChannel.id}`,
+                    workspaceId,
+                    title: `${activeChannel.name} Team Meeting`,
+                    description: `Live group conference for #${activeChannel.name}`,
+                    scheduledAt: new Date().toISOString(),
+                    duration: 60,
+                    hostId: user?.id || '',
+                    channelId: activeChannel.id,
+                    status: 'LIVE' as const,
+                    createdAt: new Date().toISOString(),
+                    host: user ? { id: user.id, name: user.name, email: user.email, avatarUrl: user.avatarUrl } : { id: '', name: 'Host', email: '' },
+                    channel: { id: activeChannel.id, name: activeChannel.name },
+                    participants: members.map((m) => ({
+                      id: `p-${m.id}`,
+                      meetingId: `meeting-${activeChannel.id}`,
+                      userId: m.user.id,
+                      role: m.role || 'MEMBER',
+                      status: 'ACCEPTED' as const,
+                      user: m.user,
+                    })),
+                  };
+                  setActiveTeamMeeting(instantMeeting);
+                }}
+                className="flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white p-2 sm:px-3 sm:py-1.5 text-xs font-bold transition-all shadow-md shadow-indigo-600/20 shrink-0 whitespace-nowrap active:scale-95"
+                title="Start or join Zoom/Teams style multi-party video meeting"
+              >
+                <Users className="h-4 w-4 shrink-0 text-white" />
+                <span className="hidden sm:inline">Team Meeting</span>
+              </button>
+            )}
+
             {/* Audio Huddle Button with Live Waves */}
-            {!activeRecipient && (
+            {!activeRecipient && !showCalendarView && (
               <button
                 onClick={() => setHuddleActive(!huddleActive)}
               className={`flex items-center gap-1.5 sm:gap-2 rounded-xl p-2 sm:px-3 sm:py-1.5 text-xs font-bold border transition-all shadow-subtle shrink-0 whitespace-nowrap ${
@@ -4423,7 +5046,26 @@ function WorkspaceShellContent() {
               </span>
             </button>
 
-            {!activeRecipient && activeChannel && isWorkspaceOwner && (
+            {/* Call Recordings Database Button */}
+            <button
+              type="button"
+              onClick={() => {
+                loadWorkspaceRecordings();
+                setShowRecordingsModal(true);
+              }}
+              className="flex items-center gap-1.5 rounded-xl bg-white border border-slate-200/80 hover:border-rose-300 hover:bg-rose-50/50 p-2 sm:px-3 sm:py-1.5 text-xs font-semibold text-slate-700 hover:text-rose-800 transition-all shadow-subtle shrink-0 whitespace-nowrap"
+              title="View saved call recordings"
+            >
+              <Disc className="h-3.5 w-3.5 text-rose-500 shrink-0" />
+              <span className="hidden sm:inline">Recordings</span>
+              {workspaceRecordings.length > 0 && (
+                <span className="ml-0.5 px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-rose-100 text-rose-700">
+                  {workspaceRecordings.length}
+                </span>
+              )}
+            </button>
+
+            {!activeRecipient && activeChannel && canInviteMembers(currentUserRole) && (
               <button
                 onClick={() => {
                   setSelectedAddUserIds([]);
@@ -4515,7 +5157,46 @@ function WorkspaceShellContent() {
 
           {/* Main Feed + Thread Split */}
           <div className="flex-1 flex overflow-hidden">
-            {activeRecipient ? (
+            {showCalendarView ? (
+              <CalendarView
+                workspaceId={workspaceId}
+                token={token}
+                currentUser={user}
+                currentUserRole={currentUserRole || 'MEMBER'}
+                channels={channels}
+                members={members}
+                onStartInstantMeeting={(meetingTitle, channelId) => {
+                  const targetChannel = channels.find((c) => c.id === channelId) || activeChannel;
+                  const instantMeeting: Meeting = {
+                    id: `meeting-${Date.now()}`,
+                    workspaceId,
+                    title: meetingTitle || `${targetChannel?.name ? '#' + targetChannel.name : 'Team'} Instant Meeting`,
+                    description: 'Instant ad-hoc team video conference',
+                    scheduledAt: new Date().toISOString(),
+                    duration: 45,
+                    hostId: user?.id || '',
+                    channelId: targetChannel?.id,
+                    status: 'LIVE' as const,
+                    createdAt: new Date().toISOString(),
+                    host: user ? { id: user.id, name: user.name, email: user.email, avatarUrl: user.avatarUrl } : { id: '', name: 'Host', email: '' },
+                    channel: targetChannel ? { id: targetChannel.id, name: targetChannel.name } : undefined,
+                    participants: members.map((m) => ({
+                      id: `p-${m.id}`,
+                      meetingId: `meeting-${Date.now()}`,
+                      userId: m.user.id,
+                      role: m.role || 'MEMBER',
+                      status: 'ACCEPTED' as const,
+                      user: m.user,
+                    })),
+                  };
+                  setActiveTeamMeeting(instantMeeting);
+                }}
+                onJoinMeeting={(meeting) => {
+                  setActiveTeamMeeting(meeting);
+                }}
+                onClose={() => setShowCalendarView(false)}
+              />
+            ) : activeRecipient ? (
               <div className="flex-1 flex flex-col justify-between overflow-hidden bg-white">
                 {/* Direct Message Feed Stream */}
                 <div className="flex-1 overflow-y-auto px-3 sm:px-6 py-4 sm:py-6 space-y-3">
@@ -5015,6 +5696,24 @@ function WorkspaceShellContent() {
                     </div>
                   </form>
                 </div>
+              </div>
+            ) : !activeChannel ? (
+              <div className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-slate-50/50">
+                <div className="h-16 w-16 rounded-3xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600 mb-4 shadow-sm">
+                  <Hash className="h-8 w-8" />
+                </div>
+                <h3 className="text-xl font-bold text-slate-900">Welcome to {currentWs?.name || 'Workspace'}</h3>
+                <p className="text-xs text-slate-500 max-w-md mt-1 mb-6">
+                  No channels have been created yet. Create your first channel with your own choice of name, or pick a teammate from the left sidebar to send a direct message.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowCreateChannelModal(true)}
+                  className="inline-flex items-center gap-2 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white px-5 py-2.5 text-xs font-bold shadow-lg shadow-indigo-600/20 transition-all active:scale-98"
+                >
+                  <Plus className="h-4 w-4" />
+                  <span>Create Your First Channel</span>
+                </button>
               </div>
             ) : (
               <div className="flex-1 flex flex-col justify-between overflow-hidden bg-white">
@@ -6087,8 +6786,8 @@ function WorkspaceShellContent() {
                 ) : (
                   /* Workspace Members Tab Content */
                   <>
-                    {/* Quick Invite Button (Owner Only) */}
-                    {isWorkspaceOwner && (
+                    {/* Quick Invite Button */}
+                    {canInviteMembers(currentUserRole) && (
                       <div className="pt-3">
                         <button
                           onClick={() => {
@@ -6112,7 +6811,7 @@ function WorkspaceShellContent() {
                           m.role === 'OWNER' ||
                           currentWs?.owner?.id === m.user.id ||
                           currentWs?.ownerId === m.user.id;
-                        const canRemove = isWorkspaceOwner && !isMe && !isMemberOwner;
+                        const canRemove = canRemoveMember(currentUserRole, m.role, isMe);
 
                         return (
                           <div
@@ -6141,15 +6840,34 @@ function WorkspaceShellContent() {
                                   {m.user.name}{' '}
                                   {isMe && <span className="text-[10px] text-slate-400 font-normal">(you)</span>}
                                 </span>
-                                <span className="text-[10px] text-slate-500 truncate">
-                                  {isMemberOwner ? (
-                                    <span className="font-semibold text-amber-600">Workspace Owner</span>
-                                  ) : m.role === 'ADMIN' ? (
-                                    <span className="font-semibold text-indigo-600">Admin</span>
-                                  ) : (
-                                    'Member'
-                                  )}
-                                </span>
+                                {canManageMemberRole(currentUserRole, m.role) && !isMe ? (
+                                  <div className="flex items-center gap-1 mt-0.5">
+                                    <select
+                                      value={m.role}
+                                      onChange={(e) => handleUpdateMemberRole(m.id, e.target.value as WorkspaceRole)}
+                                      className="text-[10px] font-bold rounded-lg border border-slate-200 bg-white px-1.5 py-0.5 text-slate-700 hover:border-indigo-400 focus:outline-none focus:ring-1 focus:ring-indigo-300 cursor-pointer shadow-2xs"
+                                    >
+                                      {getAllowedInviteRoles(currentUserRole).map((r) => (
+                                        <option key={r} value={r}>
+                                          {ROLE_CONFIGS[r]?.label || r}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                ) : (
+                                  <span className="text-[10px] text-slate-500 truncate mt-0.5">
+                                    {isMemberOwner ? (
+                                      <span className="inline-flex items-center gap-1 font-bold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
+                                        <Crown className="h-2.5 w-2.5" />
+                                        Super Admin
+                                      </span>
+                                    ) : (
+                                      <span className={`inline-flex items-center gap-1 font-bold px-1.5 py-0.5 rounded border ${ROLE_CONFIGS[m.role as WorkspaceRole]?.badgeBg || 'bg-slate-50'} ${ROLE_CONFIGS[m.role as WorkspaceRole]?.badgeText || 'text-slate-700'} ${ROLE_CONFIGS[m.role as WorkspaceRole]?.badgeBorder || 'border-slate-200'}`}>
+                                        {ROLE_CONFIGS[m.role as WorkspaceRole]?.label || m.role}
+                                      </span>
+                                    )}
+                                  </span>
+                                )}
                               </div>
                             </div>
 
@@ -6413,8 +7131,8 @@ function WorkspaceShellContent() {
                 />
               </div>
 
-              {/* Teammates Selection: Only Workspace Owner can add teammates to new channels */}
-              {isWorkspaceOwner && (
+              {/* Teammates Selection: Authorized roles can add teammates to new channels */}
+              {canInviteMembers(currentUserRole) && (
                 <div className="pt-1">
                   <div className="flex items-center justify-between mb-1">
                     <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
@@ -6508,7 +7226,7 @@ function WorkspaceShellContent() {
       {/* ─────────────────────────────────────────────────────────────
           7B. ADD PEOPLE TO ACTIVE CHANNEL MODAL
       ───────────────────────────────────────────────────────────── */}
-      {showAddChannelMemberModal && activeChannel && isWorkspaceOwner && (
+      {showAddChannelMemberModal && activeChannel && canInviteMembers(currentUserRole) && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4 animate-in fade-in duration-150"
           onClick={() => setShowAddChannelMemberModal(false)}
@@ -6649,6 +7367,172 @@ function WorkspaceShellContent() {
                   {isAddingChannelMember ? 'Adding...' : 'Add to Channel'}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─────────────────────────────────────────────────────────────
+          7C. MODERN "EDIT CHANNEL" MODAL (Clean Glass Light)
+      ───────────────────────────────────────────────────────────── */}
+      {showEditChannelModal && (channelToEdit || activeChannel) && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4 animate-in fade-in duration-150"
+          onClick={() => {
+            setShowEditChannelModal(false);
+            setChannelToEdit(null);
+          }}
+        >
+          <div
+            className="w-full max-w-md rounded-3xl bg-white p-7 shadow-2xl text-slate-900 border border-slate-200 animate-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3.5 border-b border-slate-100">
+              <div className="flex items-center gap-2.5">
+                <div className="h-8 w-8 rounded-xl bg-indigo-50 border border-indigo-200/80 flex items-center justify-center text-indigo-600">
+                  <Pencil className="h-4 w-4" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">
+                    Edit #{channelToEdit?.name || activeChannel?.name}
+                  </h3>
+                  <p className="text-[11px] text-slate-500">Update channel name, topic, or privacy</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowEditChannelModal(false);
+                  setChannelToEdit(null);
+                }}
+                className="text-slate-400 hover:text-slate-800 p-1.5 hover:bg-slate-100 rounded-xl transition-colors"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {editChannelError && (
+              <div className="mt-3.5 rounded-xl bg-rose-50 border border-rose-200 p-3 text-xs text-rose-700">
+                {editChannelError}
+              </div>
+            )}
+
+            <form onSubmit={handleUpdateChannel} className="mt-5 space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                  Channel Name
+                </label>
+                <div className="relative mt-1.5 flex items-center">
+                  <span className="absolute left-3.5 text-indigo-600 font-bold">#</span>
+                  <input
+                    type="text"
+                    required
+                    value={editChannelName}
+                    onChange={(e) => setEditChannelName(e.target.value)}
+                    placeholder="e.g. general-discussions"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 pl-8 pr-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-indigo-600 focus:outline-none focus:ring-1 focus:ring-indigo-600"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                  Topic (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={editChannelTopic}
+                  onChange={(e) => setEditChannelTopic(e.target.value)}
+                  placeholder="What is this channel about?"
+                  className="mt-1.5 w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-indigo-600 focus:outline-none focus:ring-1 focus:ring-indigo-600"
+                />
+              </div>
+
+              <div className="flex items-center justify-between rounded-2xl border border-slate-200 p-3.5 bg-slate-50">
+                <div>
+                  <span className="text-xs font-bold text-slate-900 block">Make Private</span>
+                  <span className="text-[11px] text-slate-500 block">
+                    Only invited members can view this channel
+                  </span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={editChannelIsPrivate}
+                  onChange={(e) => setEditChannelIsPrivate(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-600"
+                />
+              </div>
+
+              <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowEditChannelModal(false);
+                    setChannelToEdit(null);
+                  }}
+                  className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={editChannelLoading || !editChannelName.trim()}
+                  className="rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 px-4 py-2 text-xs font-bold text-white shadow-md shadow-indigo-600/25 hover:opacity-95 disabled:opacity-50 transition-all flex items-center gap-1.5"
+                >
+                  {editChannelLoading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  <span>{editChannelLoading ? 'Saving...' : 'Save Changes'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ─────────────────────────────────────────────────────────────
+          7D. MODERN "DELETE CHANNEL" CONFIRMATION MODAL
+      ───────────────────────────────────────────────────────────── */}
+      {channelToDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4 animate-in fade-in duration-150"
+          onClick={() => setChannelToDelete(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-3xl bg-white p-7 shadow-2xl text-slate-900 border border-slate-200 animate-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 pb-3.5 border-b border-slate-100">
+              <div className="h-10 w-10 rounded-2xl bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600 shrink-0 shadow-2xs">
+                <Trash2 className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  Delete #{channelToDelete.name}?
+                </h3>
+                <p className="text-xs text-slate-500">This action cannot be undone</p>
+              </div>
+            </div>
+
+            <div className="mt-4 p-3.5 rounded-2xl bg-rose-50/70 border border-rose-200/80 text-xs text-rose-900 leading-relaxed">
+              Are you sure you want to permanently delete <strong>#{channelToDelete.name}</strong>? All conversation history, replies, reactions, and attachments in this channel will be permanently removed.
+            </div>
+
+            <div className="flex justify-end gap-2.5 pt-5 mt-5 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setChannelToDelete(null)}
+                className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeleteChannel(channelToDelete.id)}
+                disabled={deleteChannelLoading}
+                className="rounded-xl bg-rose-600 hover:bg-rose-700 px-4 py-2 text-xs font-bold text-white shadow-md shadow-rose-600/25 transition-all flex items-center gap-1.5 disabled:opacity-50"
+              >
+                {deleteChannelLoading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                <span>{deleteChannelLoading ? 'Deleting...' : 'Delete Channel'}</span>
+              </button>
             </div>
           </div>
         </div>
@@ -7296,7 +8180,7 @@ function WorkspaceShellContent() {
       {/* ─────────────────────────────────────────────────────────────
           INVITE TEAMMATES MODAL (Slack-fidelity Add Member Dialog)
       ───────────────────────────────────────────────────────────── */}
-      {showInviteModal && isWorkspaceOwner && (
+      {showInviteModal && canInviteMembers(currentUserRole) && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4 animate-in fade-in duration-150">
           <div className="w-full max-w-lg rounded-3xl bg-white shadow-2xl border border-slate-200 overflow-hidden text-slate-900 animate-in zoom-in-95 duration-150">
             {/* Modal Header */}
@@ -7310,7 +8194,7 @@ function WorkspaceShellContent() {
                     Add teammates to {currentWs?.name || 'Workspace'}
                   </h3>
                   <p className="text-xs text-slate-500">
-                    Invite colleagues to collaborate in channels and direct messages
+                    Invite colleagues and assign them project and workspace roles
                   </p>
                 </div>
               </div>
@@ -7340,7 +8224,7 @@ function WorkspaceShellContent() {
               )}
 
               {/* Method 1: Direct Email Invitation */}
-              <form onSubmit={handleInviteMember} className="space-y-3">
+              <form onSubmit={handleInviteMember} className="space-y-4">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
                     Invite by Registered Email
@@ -7361,7 +8245,30 @@ function WorkspaceShellContent() {
                   </p>
                 </div>
 
-                <div className="flex justify-end">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                    Assign Role & Authority
+                  </label>
+                  <select
+                    value={inviteRole}
+                    onChange={(e) => setInviteRole(e.target.value as WorkspaceRole)}
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs text-slate-900 font-semibold focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100 transition-all shadow-2xs"
+                  >
+                    {getAllowedInviteRoles(currentUserRole).map((r) => {
+                      const cfg = ROLE_CONFIGS[r];
+                      return (
+                        <option key={r} value={r}>
+                          {cfg.label} ({r}) - {cfg.description}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    {ROLE_CONFIGS[inviteRole]?.description}
+                  </p>
+                </div>
+
+                <div className="flex justify-end pt-1">
                   <button
                     type="submit"
                     disabled={inviteLoading || !inviteEmail.trim()}
@@ -7669,348 +8576,453 @@ function WorkspaceShellContent() {
       )}
 
       {/* ─────────────────────────────────────────────────────────────
-          ACTIVE / OUTGOING CALL OVERLAY
+          ACTIVE / OUTGOING CALL OVERLAY (True Edge-to-Edge Full Screen)
       ───────────────────────────────────────────────────────────── */}
       {(callStatus === 'calling' || callStatus === 'connected') && callPeer && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-0 sm:p-4 animate-in fade-in duration-200">
-          <div className="w-full h-full sm:h-auto sm:max-w-3xl sm:rounded-3xl bg-slate-900 border sm:border-slate-700/80 shadow-2xl overflow-hidden flex flex-col justify-between sm:justify-start text-white relative">
-            {/* Call Notification Toast Banner */}
-            {callNotificationMsg && (
-              <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 max-w-[90%] px-4 py-2 rounded-xl bg-slate-800/95 border border-amber-500/50 text-amber-300 text-xs font-medium shadow-2xl flex items-center gap-2 backdrop-blur-sm animate-in fade-in slide-in-from-top-2">
-                <span className="h-2 w-2 rounded-full bg-amber-400 shrink-0 animate-pulse" />
-                <span>{callNotificationMsg}</span>
-              </div>
-            )}
+        <div
+          ref={callOverlayContainerRef}
+          className="fixed inset-0 z-50 flex flex-col w-screen h-[100dvh] bg-slate-950 text-white overflow-hidden animate-in fade-in duration-200"
+        >
+          {/* Call Notification Toast Banner */}
+          {callNotificationMsg && (
+            <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 max-w-[90%] px-4 py-2 rounded-xl bg-slate-800/95 border border-amber-500/50 text-amber-300 text-xs font-medium shadow-2xl flex items-center gap-2 backdrop-blur-sm animate-in fade-in slide-in-from-top-2">
+              <span className="h-2 w-2 rounded-full bg-amber-400 shrink-0 animate-pulse" />
+              <span>{callNotificationMsg}</span>
+            </div>
+          )}
 
-            {/* Dedicated Remote Audio Output - Always mounted & unmuted for crystal-clear bidirectional sound */}
-            <audio
-              ref={remoteAudioRef}
-              autoPlay
-              playsInline
-              style={{ position: 'fixed', top: -9999, left: -9999, width: 1, height: 1, opacity: 0, pointerEvents: 'none' }}
-            />
-
-            {/* Call Header */}
-            <div className="px-4 sm:px-6 py-3.5 sm:py-4 bg-slate-800/80 border-b border-slate-700/60 flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-3">
-                <img
-                  src={callPeer.avatarUrl || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
-                  alt={callPeer.name}
-                  className="h-10 w-10 rounded-xl object-cover border border-slate-600 shadow-sm"
-                />
-                <div className="flex flex-col">
-                  <span className="font-bold text-sm text-white">{callPeer.name}</span>
-                  <div className="flex items-center gap-2 mt-0.5">
-                    {callStatus === 'connected' ? (
-                      <span className="flex items-center gap-1.5 text-xs text-emerald-400 font-semibold font-mono">
-                        <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-                        {formatCallDuration(callDuration)}
-                      </span>
-                    ) : (
-                      <span className="flex items-center gap-1.5 text-xs text-amber-300 font-medium">
-                        <span className="h-2 w-2 rounded-full bg-amber-400 animate-ping" />
-                        Calling...
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                {/* Active Screen Sharing Badge */}
-                {isScreenSharing && (
-                  <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-500/20 border border-indigo-500/60 text-indigo-300 flex items-center gap-1.5 animate-pulse shadow-sm shadow-indigo-500/20">
-                    <MonitorUp className="h-3 w-3" />
-                    <span>Sharing Screen</span>
-                  </span>
-                )}
-
-                {/* Active Recording Indicator Badge */}
-                {isRecording && (
-                  <span className="px-2.5 py-1 rounded-full text-xs font-mono font-bold bg-rose-500/20 border border-rose-500/60 text-rose-400 flex items-center gap-1.5 animate-pulse shadow-sm shadow-rose-500/30">
-                    <span className="h-2 w-2 rounded-full bg-rose-500" />
-                    <span>REC {formatCallDuration(recordingDuration)}</span>
-                  </span>
-                )}
-                {isPeerRecording && !isRecording && (
-                  <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-500/20 border border-rose-500/60 text-rose-400 flex items-center gap-1.5 animate-pulse">
-                    <span className="h-2 w-2 rounded-full bg-rose-500" />
-                    <span>Recording in progress</span>
-                  </span>
-                )}
-
-                <span className="px-3 py-1 rounded-full text-xs font-semibold bg-slate-700/70 border border-slate-600 text-slate-300 flex items-center gap-1.5">
-                  {callType === 'video' ? (
-                    <>
-                      <Video className="h-3 w-3 text-indigo-400" />
-                      <span>Video Call</span>
-                    </>
+          {/* Call Header */}
+          <div className="px-4 sm:px-6 py-3 sm:py-3.5 bg-slate-900/90 border-b border-slate-800/80 flex items-center justify-between shrink-0 backdrop-blur-md">
+            <div className="flex items-center gap-3">
+              <img
+                src={callPeer.avatarUrl || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
+                alt={callPeer.name}
+                className="h-10 w-10 rounded-xl object-cover border border-slate-700 shadow-sm"
+              />
+              <div className="flex flex-col">
+                <span className="font-bold text-sm text-white">{callPeer.name}</span>
+                <div className="flex items-center gap-2 mt-0.5">
+                  {callStatus === 'connected' ? (
+                    <span className="flex items-center gap-1.5 text-xs text-emerald-400 font-semibold font-mono">
+                      <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                      {formatCallDuration(callDuration)}
+                    </span>
                   ) : (
-                    <>
-                      <Phone className="h-3 w-3 text-emerald-400" />
-                      <span>Audio Call</span>
-                    </>
+                    <span className="flex items-center gap-1.5 text-xs text-amber-300 font-medium">
+                      <span className="h-2 w-2 rounded-full bg-amber-400 animate-ping" />
+                      Calling...
+                    </span>
                   )}
-                </span>
+                </div>
               </div>
             </div>
 
-            {/* Media / Video Center Area */}
-            <div className="relative bg-slate-950 flex-1 sm:flex-initial min-h-[300px] sm:min-h-[380px] md:min-h-[440px] flex items-center justify-center overflow-hidden">
-              {callType === 'video' ? (
-                <>
-                  {/* Remote video stream (muted=true so remoteAudioRef outputs clear audio without mobile autoplay blocks) */}
-                  <video
-                    ref={remoteVideoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    onPlaying={() => setHasRemoteVideo(true)}
-                    onLoadedData={() => setHasRemoteVideo(true)}
-                    className={`w-full h-full min-h-[300px] sm:h-[380px] md:h-[440px] bg-slate-950 transition-all ${
-                      isScreenSharing || screenFitMode === 'contain' ? 'object-contain' : 'object-cover'
-                    }`}
-                  />
+            <div className="flex items-center gap-2">
+              {/* Active Screen Sharing Badge */}
+              {isScreenSharing && (
+                <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-500/20 border border-indigo-500/60 text-indigo-300 flex items-center gap-1.5 animate-pulse shadow-sm shadow-indigo-500/20">
+                  <MonitorUp className="h-3 w-3" />
+                  <span className="hidden sm:inline">Sharing Screen</span>
+                </span>
+              )}
+
+              {/* Active Recording Indicator Badge */}
+              {isRecording && (
+                <span className="px-2.5 py-1 rounded-full text-xs font-mono font-bold bg-rose-500/20 border border-rose-500/60 text-rose-400 flex items-center gap-1.5 animate-pulse shadow-sm shadow-rose-500/30">
+                  <span className="h-2 w-2 rounded-full bg-rose-500" />
+                  <span>REC {formatCallDuration(recordingDuration)}</span>
+                </span>
+              )}
+              {isPeerRecording && !isRecording && (
+                <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-500/20 border border-rose-500/60 text-rose-400 flex items-center gap-1.5 animate-pulse">
+                  <span className="h-2 w-2 rounded-full bg-rose-500" />
+                  <span className="hidden sm:inline">Recording in progress</span>
+                </span>
+              )}
+
+              {/* Fullscreen API Toggle */}
+              <button
+                type="button"
+                onClick={() => {
+                  if (!document.fullscreenElement) {
+                    if (callOverlayContainerRef.current?.requestFullscreen) {
+                      callOverlayContainerRef.current.requestFullscreen().catch(() => {});
+                    }
+                    setIsCallFullscreen(true);
+                  } else {
+                    if (document.exitFullscreen) {
+                      document.exitFullscreen().catch(() => {});
+                    }
+                    setIsCallFullscreen(false);
+                  }
+                }}
+                className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 text-xs font-medium flex items-center gap-1.5 transition-colors shadow-sm"
+                title={isCallFullscreen ? 'Exit Full Screen' : 'Full Screen'}
+              >
+                {isCallFullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+                <span className="hidden sm:inline">{isCallFullscreen ? 'Exit Full' : 'Fullscreen'}</span>
+              </button>
+
+              <span className="px-3 py-1 rounded-full text-xs font-semibold bg-slate-800 border border-slate-700 text-slate-300 flex items-center gap-1.5">
+                {callType === 'video' ? (
+                  <>
+                    <Video className="h-3 w-3 text-indigo-400" />
+                    <span className="hidden sm:inline">Video Call</span>
+                  </>
+                ) : (
+                  <>
+                    <Phone className="h-3 w-3 text-emerald-400" />
+                    <span className="hidden sm:inline">Audio Call</span>
+                  </>
+                )}
+              </span>
+            </div>
+          </div>
+
+          {/* Media / Video Center Stage (Takes 100% of available viewport) */}
+          <div className="relative bg-slate-950 flex-1 w-full h-full flex items-center justify-center overflow-hidden">
+            {callType === 'video' ? (
+              <>
+                {/* Remote video stream */}
+                <video
+                  ref={remoteVideoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  onPlaying={() => setHasRemoteVideo(true)}
+                  onLoadedData={() => setHasRemoteVideo(true)}
+                  className={`w-full h-full bg-slate-950 transition-all ${
+                    isScreenSharing || screenFitMode === 'contain' ? 'object-contain' : 'object-cover'
+                  }`}
+                />
+
+                {/* Picture-in-Picture Recovery Overlay Banner */}
+                {isPiPActive && (
+                  <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-slate-950/90 backdrop-blur-sm p-4 text-center">
+                    <div className="p-4 rounded-2xl bg-indigo-600/20 border border-indigo-500/40 mb-3 text-indigo-400">
+                      <PictureInPicture className="h-10 w-10 animate-pulse" />
+                    </div>
+                    <h3 className="text-white font-bold text-base sm:text-lg">This video is playing in Picture-in-Picture mode</h3>
+                    <p className="text-slate-400 text-xs mt-1 max-w-sm">
+                      The video stream is floating outside. Click the button below to bring it right back into this screen!
+                    </p>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          if (document.pictureInPictureElement) {
+                            await document.exitPictureInPicture();
+                          }
+                        } catch (e) {}
+                        setIsPiPActive(false);
+                      }}
+                      className="mt-4 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow-lg shadow-indigo-600/40 transition-all flex items-center gap-2 active:scale-95"
+                    >
+                      <Maximize2 className="h-4 w-4" />
+                      <span>Return Video to Screen</span>
+                    </button>
+                  </div>
+                )}
+
+                {/* Top Video Action Controls (Fit/Fill + PiP) */}
+                <div className="absolute top-4 right-4 z-20 flex items-center gap-2">
+                  {/* PiP Button */}
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        if (remoteVideoRef.current) {
+                          if (document.pictureInPictureElement) {
+                            await document.exitPictureInPicture();
+                            setIsPiPActive(false);
+                          } else {
+                            await remoteVideoRef.current.requestPictureInPicture();
+                            setIsPiPActive(true);
+                          }
+                        }
+                      } catch (e) {
+                        console.warn('PiP error:', e);
+                      }
+                    }}
+                    className="px-2.5 py-1.5 rounded-xl bg-black/60 hover:bg-black/80 text-white text-[11px] font-medium flex items-center gap-1.5 border border-slate-700/80 backdrop-blur-xs transition-colors shadow-md"
+                    title="Toggle Picture in Picture"
+                  >
+                    <PictureInPicture className="h-3 w-3" />
+                    <span>PiP</span>
+                  </button>
 
                   {/* Fit / Fill toggle button */}
                   <button
                     type="button"
                     onClick={() => setScreenFitMode((prev) => (prev === 'contain' ? 'cover' : 'contain'))}
-                    className="absolute top-3 right-3 z-30 px-2.5 py-1.5 rounded-xl bg-black/60 hover:bg-black/80 text-white text-[11px] font-medium flex items-center gap-1.5 border border-slate-700/80 backdrop-blur-xs transition-colors shadow-md"
+                    className="px-2.5 py-1.5 rounded-xl bg-black/60 hover:bg-black/80 text-white text-[11px] font-medium flex items-center gap-1.5 border border-slate-700/80 backdrop-blur-xs transition-colors shadow-md"
                     title={screenFitMode === 'contain' ? 'Fill screen' : 'Fit entire screen without cropping'}
                   >
                     {screenFitMode === 'contain' ? <Maximize2 className="h-3 w-3" /> : <Minimize2 className="h-3 w-3" />}
                     <span>{screenFitMode === 'contain' ? 'Fit Screen' : 'Fill'}</span>
                   </button>
+                </div>
 
-                  {/* Ringing placeholder while waiting for answer */}
-                  {callStatus === 'calling' && (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/80 backdrop-blur-xs">
-                      <div className="relative">
-                        <div className="absolute -inset-4 rounded-full bg-indigo-500/20 animate-ping" />
-                        <img
-                          src={callPeer.avatarUrl || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
-                          alt={callPeer.name}
-                          className="h-24 w-24 rounded-full object-cover border-4 border-slate-700 shadow-xl"
-                        />
-                      </div>
-                      <h4 className="mt-4 font-bold text-base text-white">{callPeer.name}</h4>
-                      <p className="text-xs text-slate-400 mt-1">Ringing...</p>
+                {/* Ringing placeholder while waiting for answer */}
+                {callStatus === 'calling' && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/80 backdrop-blur-xs">
+                    <div className="relative">
+                      <div className="absolute -inset-4 rounded-full bg-indigo-500/20 animate-ping" />
+                      <img
+                        src={callPeer.avatarUrl || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
+                        alt={callPeer.name}
+                        className="h-28 w-28 rounded-full object-cover border-4 border-slate-700 shadow-xl"
+                      />
                     </div>
-                  )}
-
-                  {/* Remote Peer Without Video / Camera Off Fallback */}
-                  {callStatus === 'connected' && !hasRemoteVideo && (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/95 backdrop-blur-xs z-10">
-                      <div className="relative">
-                        <div className="absolute -inset-4 rounded-full bg-indigo-500/10 animate-pulse" />
-                        <img
-                          src={callPeer.avatarUrl || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
-                          alt={callPeer.name}
-                          className="h-24 w-24 rounded-full object-cover border-4 border-slate-700 shadow-xl"
-                        />
-                      </div>
-                      <h4 className="mt-4 font-bold text-base text-white">{callPeer.name}</h4>
-                      <div className="flex items-center gap-2 mt-2 px-3 py-1 rounded-full bg-slate-800/80 border border-slate-700/60 text-slate-300 text-xs font-medium">
-                        <Mic className="h-3.5 w-3.5 text-emerald-400" />
-                        <span>Connected (Microphone only)</span>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Local video PiP (bottom right) */}
-                  <div className="absolute bottom-4 right-4 z-20 w-28 h-20 sm:w-36 sm:h-24 rounded-xl overflow-hidden border-2 border-indigo-500/80 shadow-2xl bg-slate-900 group">
-                    <video
-                      ref={localVideoRef}
-                      autoPlay
-                      playsInline
-                      muted
-                      className={`w-full h-full object-cover ${isVideoMuted ? 'opacity-0' : 'opacity-100'}`}
-                    />
-                    {isVideoMuted && (
-                      <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-800 text-slate-400 text-[10px] font-semibold text-center p-1">
-                        <VideoOff className="h-4 w-4 mb-0.5 text-slate-500" />
-                        <span>{!hasLocalCamera ? 'No Camera' : 'Camera Off'}</span>
-                      </div>
-                    )}
-                    <span className="absolute bottom-1 left-1.5 px-1.5 py-0.5 rounded bg-black/60 text-[9px] text-white font-medium">
-                      You
-                    </span>
+                    <h4 className="mt-4 font-bold text-lg text-white">{callPeer.name}</h4>
+                    <p className="text-xs text-slate-400 mt-1">Ringing teammate...</p>
                   </div>
-                </>
-              ) : (
-                /* Audio Call Central Stage */
-                <div className="py-16 flex flex-col items-center justify-center">
-                  <div className="relative">
-                    {callStatus === 'connected' && (
+                )}
+
+                {/* Remote Peer Without Video / Camera Off Fallback */}
+                {callStatus === 'connected' && !hasRemoteVideo && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/95 backdrop-blur-xs z-10">
+                    <div className="relative">
+                      <div className="absolute -inset-4 rounded-full bg-indigo-500/10 animate-pulse" />
+                      <img
+                        src={callPeer.avatarUrl || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
+                        alt={callPeer.name}
+                        className="h-28 w-28 rounded-full object-cover border-4 border-slate-700 shadow-xl"
+                      />
+                    </div>
+                    <h4 className="mt-4 font-bold text-lg text-white">{callPeer.name}</h4>
+                    <div className="flex items-center gap-2 mt-2 px-3 py-1 rounded-full bg-slate-800/80 border border-slate-700/60 text-slate-300 text-xs font-medium">
+                      <Mic className="h-3.5 w-3.5 text-emerald-400" />
+                      <span>Connected (Microphone only)</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Local video PiP (bottom right) */}
+                <div className="absolute bottom-6 right-6 z-20 w-32 h-24 sm:w-48 sm:h-36 rounded-2xl overflow-hidden border-2 border-indigo-500/80 shadow-2xl bg-slate-900 group">
+                  <video
+                    ref={localVideoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    className={`w-full h-full object-cover ${isVideoMuted ? 'opacity-0' : 'opacity-100'}`}
+                  />
+                  {isVideoMuted && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-800 text-slate-400 text-xs font-semibold text-center p-2">
+                      <VideoOff className="h-5 w-5 mb-1 text-slate-500" />
+                      <span>{!hasLocalCamera ? 'No Camera' : 'Camera Off'}</span>
+                    </div>
+                  )}
+                  <span className="absolute bottom-1.5 left-2 px-2 py-0.5 rounded bg-black/60 text-[10px] text-white font-medium">
+                    You
+                  </span>
+                </div>
+              </>
+            ) : (
+              /* Audio Call Central Stage */
+              <div className="py-16 flex flex-col items-center justify-center">
+                <div className="relative">
+                  {callStatus === 'connected' && (
+                    <>
+                      <div className="absolute -inset-4 rounded-full bg-emerald-500/20 animate-ping" />
+                      <div className="absolute -inset-8 rounded-full bg-indigo-500/10 animate-pulse" />
+                    </>
+                  )}
+                  {callStatus === 'calling' && (
+                    <div className="absolute -inset-4 rounded-full bg-amber-500/20 animate-ping" />
+                  )}
+                  <img
+                    src={callPeer.avatarUrl || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
+                    alt={callPeer.name}
+                    className="h-32 w-32 rounded-full object-cover border-4 border-slate-700 shadow-2xl relative z-10"
+                  />
+                </div>
+                <h4 className="mt-5 font-bold text-xl text-white">{callPeer.name}</h4>
+                <p className="text-sm text-slate-400 mt-1">
+                  {callStatus === 'calling' ? 'Ringing teammate...' : `Audio Connected • ${formatCallDuration(callDuration)}`}
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Call Control Toolbar (Docked at Bottom Edge) */}
+          <div className="p-3 sm:p-4 pb-[max(1.25rem,env(safe-area-inset-bottom))] bg-slate-900/95 border-t border-slate-800/80 flex items-center justify-center gap-2 sm:gap-3 shrink-0 flex-wrap backdrop-blur-md">
+            {/* Mic Toggle */}
+            <button
+              type="button"
+              onClick={toggleMic}
+              className={`p-3 sm:p-3.5 rounded-2xl transition-all shadow-md ${
+                isMicMuted
+                  ? 'bg-rose-500/20 text-rose-400 border border-rose-500/50 hover:bg-rose-500/30'
+                  : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80'
+              }`}
+              title={isMicMuted ? 'Unmute Microphone' : 'Mute Microphone'}
+            >
+              {isMicMuted ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
+            </button>
+
+            {/* Camera Toggle */}
+            <button
+              type="button"
+              onClick={toggleCamera}
+              className={`p-3 sm:p-3.5 rounded-2xl transition-all shadow-md ${
+                isVideoMuted || !hasLocalCamera
+                  ? 'bg-rose-500/20 text-rose-400 border border-rose-500/50 hover:bg-rose-500/30'
+                  : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80'
+              }`}
+              title={!hasLocalCamera ? 'No camera detected (click to retry/enable camera)' : isVideoMuted ? 'Turn Camera On' : 'Turn Camera Off'}
+            >
+              {isVideoMuted || !hasLocalCamera ? <VideoOff className="h-5 w-5" /> : <Video className="h-5 w-5" />}
+            </button>
+
+            {/* Mobile Camera Flip Button (Front / Back camera) */}
+            {callType === 'video' && hasLocalCamera && (
+              <button
+                type="button"
+                onClick={flipCamera}
+                className="p-3 sm:p-3.5 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80 transition-all shadow-md"
+                title={`Flip Camera (Currently: ${facingMode === 'user' ? 'Front' : 'Back'})`}
+              >
+                <RotateCcw className="h-5 w-5" />
+              </button>
+            )}
+
+            {/* Screen Share */}
+            <button
+              type="button"
+              onClick={toggleScreenShare}
+              className={`p-3 sm:p-3.5 rounded-2xl transition-all shadow-md ${
+                isScreenSharing
+                  ? 'bg-indigo-600 text-white animate-pulse shadow-indigo-600/40'
+                  : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80'
+              }`}
+              title={isScreenSharing ? 'Stop Screen Sharing' : 'Share Screen'}
+            >
+              <MonitorUp className="h-5 w-5" />
+            </button>
+
+            {/* Speaker / Audio Output Switcher */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => {
+                  loadAudioOutputDevices();
+                  setShowSpeakerMenu((prev) => !prev);
+                }}
+                className={`p-3 sm:p-3.5 rounded-2xl transition-all shadow-md ${
+                  showSpeakerMenu
+                    ? 'bg-indigo-600/30 text-indigo-400 border border-indigo-500/50'
+                    : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80'
+                }`}
+                title="Change Speaker / Audio Output"
+              >
+                <Volume2 className="h-5 w-5" />
+              </button>
+
+              {/* Speaker selection menu popover */}
+              {showSpeakerMenu && (
+                <div className="absolute bottom-16 left-1/2 -translate-x-1/2 w-64 bg-slate-900/95 border border-slate-700/80 rounded-2xl p-2 shadow-2xl backdrop-blur-md z-50 text-white animate-in fade-in slide-in-from-bottom-2">
+                  <div className="px-3 py-2 border-b border-slate-800 flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                      <Volume2 className="h-3.5 w-3.5 text-indigo-400" />
+                      Audio Output
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowSpeakerMenu(false)}
+                      className="text-slate-400 hover:text-white text-xs p-1"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+
+                  <div className="py-1 flex flex-col gap-1 max-h-48 overflow-y-auto">
+                    {audioOutputDevices.length > 0 ? (
+                      audioOutputDevices.map((dev, idx) => (
+                        <button
+                          key={dev.deviceId || idx}
+                          type="button"
+                          onClick={() => switchAudioOutput(dev.deviceId, dev.label || `Speaker ${idx + 1}`)}
+                          className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-left text-xs transition-colors ${
+                            selectedAudioOutput === dev.deviceId
+                              ? 'bg-indigo-600/30 text-indigo-300 font-semibold'
+                              : 'text-slate-300 hover:bg-slate-800'
+                          }`}
+                        >
+                          <span className="truncate pr-2">
+                            {dev.label || (idx === 0 ? 'Default Device' : `Speaker ${idx + 1}`)}
+                          </span>
+                          {selectedAudioOutput === dev.deviceId && (
+                            <Check className="h-3.5 w-3.5 text-indigo-400 shrink-0" />
+                          )}
+                        </button>
+                      ))
+                    ) : (
                       <>
-                        <div className="absolute -inset-4 rounded-full bg-emerald-500/20 animate-ping" />
-                        <div className="absolute -inset-8 rounded-full bg-indigo-500/10 animate-pulse" />
+                        <button
+                          type="button"
+                          onClick={() => switchAudioOutput('default', 'Loudspeaker / Default')}
+                          className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-left text-xs bg-indigo-600/30 text-indigo-300 font-semibold"
+                        >
+                          <span>Loudspeaker / Default</span>
+                          <Check className="h-3.5 w-3.5 text-indigo-400" />
+                        </button>
+                        <p className="px-3 py-1.5 text-[10px] text-slate-400 leading-tight">
+                          On mobile devices, you can also switch audio via phone volume controls or Bluetooth / AirPlay quick menu.
+                        </p>
                       </>
                     )}
-                    {callStatus === 'calling' && (
-                      <div className="absolute -inset-4 rounded-full bg-amber-500/20 animate-ping" />
-                    )}
-                    <img
-                      src={callPeer.avatarUrl || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
-                      alt={callPeer.name}
-                      className="h-28 w-28 rounded-full object-cover border-4 border-slate-700 shadow-2xl relative z-10"
-                    />
                   </div>
-                  <h4 className="mt-5 font-bold text-lg text-white">{callPeer.name}</h4>
-                  <p className="text-xs text-slate-400 mt-1">
-                    {callStatus === 'calling' ? 'Ringing teammate...' : `Audio Connected • ${formatCallDuration(callDuration)}`}
-                  </p>
                 </div>
               )}
             </div>
 
-            {/* Call Control Toolbar */}
-            <div className="p-3 sm:p-4 bg-slate-800/90 border-t border-slate-700/60 flex items-center justify-center gap-2 sm:gap-3 shrink-0">
-              {/* Mic Toggle */}
-              <button
-                type="button"
-                onClick={toggleMic}
-                className={`p-3 sm:p-3.5 rounded-2xl transition-all shadow-md ${
-                  isMicMuted
-                    ? 'bg-rose-500/20 text-rose-400 border border-rose-500/50 hover:bg-rose-500/30'
-                    : 'bg-slate-700/80 hover:bg-slate-600 text-slate-200'
-                }`}
-                title={isMicMuted ? 'Unmute Microphone' : 'Mute Microphone'}
-              >
-                {isMicMuted ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
-              </button>
+            {/* Record Call Button (Audio & Video) */}
+            <button
+              type="button"
+              onClick={isRecording ? stopRecording : startRecording}
+              className={`p-3 sm:p-3.5 rounded-2xl transition-all shadow-md ${
+                isRecording
+                  ? 'bg-rose-600 hover:bg-rose-700 text-white animate-pulse shadow-rose-600/50'
+                  : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80'
+              }`}
+              title={isRecording ? 'Stop Recording' : 'Record Call (Audio & Video)'}
+            >
+              {isRecording ? <Square className="h-5 w-5 fill-current" /> : <Disc className="h-5 w-5 text-rose-400" />}
+            </button>
 
-              {/* Camera Toggle - Always accessible so either participant can turn on video anytime */}
-              <button
-                type="button"
-                onClick={toggleCamera}
-                className={`p-3 sm:p-3.5 rounded-2xl transition-all shadow-md ${
-                  isVideoMuted || !hasLocalCamera
-                    ? 'bg-rose-500/20 text-rose-400 border border-rose-500/50 hover:bg-rose-500/30'
-                    : 'bg-slate-700/80 hover:bg-slate-600 text-slate-200'
-                }`}
-                title={!hasLocalCamera ? 'No camera detected (click to retry/enable camera)' : isVideoMuted ? 'Turn Camera On' : 'Turn Camera Off'}
-              >
-                {isVideoMuted || !hasLocalCamera ? <VideoOff className="h-5 w-5" /> : <Video className="h-5 w-5" />}
-              </button>
-
-              {/* Screen Share - Available in any call */}
-              <button
-                type="button"
-                onClick={toggleScreenShare}
-                className={`p-3 sm:p-3.5 rounded-2xl transition-all shadow-md ${
-                  isScreenSharing
-                    ? 'bg-indigo-600 text-white animate-pulse shadow-indigo-600/40'
-                    : 'bg-slate-700/80 hover:bg-slate-600 text-slate-200'
-                }`}
-                title={isScreenSharing ? 'Stop Screen Sharing' : 'Share Screen'}
-              >
-                <MonitorUp className="h-5 w-5" />
-              </button>
-
-              {/* Speaker / Audio Output Switcher (Essential for phone/mobile users) */}
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => {
-                    loadAudioOutputDevices();
-                    setShowSpeakerMenu((prev) => !prev);
-                  }}
-                  className={`p-3 sm:p-3.5 rounded-2xl transition-all shadow-md ${
-                    showSpeakerMenu
-                      ? 'bg-indigo-600/30 text-indigo-400 border border-indigo-500/50'
-                      : 'bg-slate-700/80 hover:bg-slate-600 text-slate-200'
-                  }`}
-                  title="Change Speaker / Audio Output"
-                >
-                  <Volume2 className="h-5 w-5" />
-                </button>
-
-                {/* Speaker selection menu popover */}
-                {showSpeakerMenu && (
-                  <div className="absolute bottom-16 left-1/2 -translate-x-1/2 w-64 bg-slate-900/95 border border-slate-700/80 rounded-2xl p-2 shadow-2xl backdrop-blur-md z-50 text-white animate-in fade-in slide-in-from-bottom-2">
-                    <div className="px-3 py-2 border-b border-slate-800 flex items-center justify-between">
-                      <span className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
-                        <Volume2 className="h-3.5 w-3.5 text-indigo-400" />
-                        Audio Output
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setShowSpeakerMenu(false)}
-                        className="text-slate-400 hover:text-white text-xs p-1"
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-
-                    <div className="py-1 flex flex-col gap-1 max-h-48 overflow-y-auto">
-                      {audioOutputDevices.length > 0 ? (
-                        audioOutputDevices.map((dev, idx) => (
-                          <button
-                            key={dev.deviceId || idx}
-                            type="button"
-                            onClick={() => switchAudioOutput(dev.deviceId, dev.label || `Speaker ${idx + 1}`)}
-                            className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-left text-xs transition-colors ${
-                              selectedAudioOutput === dev.deviceId
-                                ? 'bg-indigo-600/30 text-indigo-300 font-semibold'
-                                : 'text-slate-300 hover:bg-slate-800'
-                            }`}
-                          >
-                            <span className="truncate pr-2">
-                              {dev.label || (idx === 0 ? 'Default Device' : `Speaker ${idx + 1}`)}
-                            </span>
-                            {selectedAudioOutput === dev.deviceId && (
-                              <Check className="h-3.5 w-3.5 text-indigo-400 shrink-0" />
-                            )}
-                          </button>
-                        ))
-                      ) : (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => switchAudioOutput('default', 'Loudspeaker / Default')}
-                            className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-left text-xs bg-indigo-600/30 text-indigo-300 font-semibold"
-                          >
-                            <span>Loudspeaker / Default</span>
-                            <Check className="h-3.5 w-3.5 text-indigo-400" />
-                          </button>
-                          <p className="px-3 py-1.5 text-[10px] text-slate-400 leading-tight">
-                            On mobile devices, you can also switch audio via your phone's volume controls or Bluetooth / AirPlay quick menu.
-                          </p>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Record Call Button (Audio & Video) */}
-              <button
-                type="button"
-                onClick={isRecording ? stopRecording : startRecording}
-                className={`p-3 sm:p-3.5 rounded-2xl transition-all shadow-md ${
-                  isRecording
-                    ? 'bg-rose-600 hover:bg-rose-700 text-white animate-pulse shadow-rose-600/50'
-                    : 'bg-slate-700/80 hover:bg-slate-600 text-slate-200'
-                }`}
-                title={isRecording ? 'Stop Recording' : 'Record Call (Audio & Video)'}
-              >
-                {isRecording ? <Square className="h-5 w-5 fill-current" /> : <Disc className="h-5 w-5 text-rose-400" />}
-              </button>
-
-              {/* End Call Button */}
-              <button
-                type="button"
-                onClick={() => cleanupCall(true)}
-                className="flex items-center gap-1.5 sm:gap-2 px-4 sm:px-6 py-3 sm:py-3.5 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-lg shadow-rose-600/30 transition-all hover:scale-102 active:scale-98 ml-1 sm:ml-2"
-              >
-                <PhoneOff className="h-5 w-5" />
-                <span>End Call</span>
-              </button>
-            </div>
+            {/* End Call Button */}
+            <button
+              type="button"
+              onClick={() => cleanupCall(true)}
+              className="flex items-center gap-1.5 sm:gap-2 px-4 sm:px-6 py-3 sm:py-3.5 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-lg shadow-rose-600/30 transition-all hover:scale-102 active:scale-98 ml-1 sm:ml-2"
+            >
+              <PhoneOff className="h-5 w-5" />
+              <span>End Call</span>
+            </button>
           </div>
         </div>
+      )}
+
+      {/* ─────────────────────────────────────────────────────────────
+          MULTI-PARTY TEAM GROUP MEETING OVERLAY (Zoom/Teams style for 3-16+ people)
+      ───────────────────────────────────────────────────────────── */}
+      {activeTeamMeeting && user && (
+        <GroupMeetingOverlay
+          meetingId={activeTeamMeeting.id}
+          meetingTitle={activeTeamMeeting.title}
+          channelName={activeTeamMeeting.channel?.name || activeChannel?.name}
+          workspaceId={workspaceId}
+          user={user}
+          userRole={currentUserRole || 'MEMBER'}
+          socket={getSocket()}
+          onLeaveMeeting={() => {
+            setActiveTeamMeeting(null);
+            if (typeof window !== 'undefined' && window.location.search.includes('meeting=')) {
+              window.history.replaceState({}, '', window.location.pathname);
+            }
+          }}
+        />
       )}
 
       {/* ─────────────────────────────────────────────────────────────
@@ -8157,6 +9169,224 @@ function WorkspaceShellContent() {
                 className="py-2.5 px-4 rounded-2xl bg-slate-800/50 hover:bg-slate-800 text-slate-300 font-semibold text-xs transition-colors text-center"
               >
                 Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Saved Call Recordings Database Modal */}
+      {showRecordingsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-3 sm:p-6 animate-in fade-in duration-200">
+          <div className="bg-slate-900 border border-slate-700/80 rounded-3xl max-w-2xl w-full max-h-[90vh] shadow-2xl text-white flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+            {/* Modal Header */}
+            <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between shrink-0 bg-slate-900/90">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-2xl bg-rose-500/15 text-rose-400 border border-rose-500/30">
+                  <Disc className="h-5 w-5 text-rose-400 animate-pulse" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    Saved Call Recordings
+                    <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                      {workspaceRecordings.length}
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Call audio and video recordings stored safely in database
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowRecordingsModal(false);
+                  setActivePlaybackRecording(null);
+                }}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                title="Close"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="p-4 sm:p-6 overflow-y-auto flex-1 flex flex-col gap-4">
+              {/* Active Player if playing a recording */}
+              {activePlaybackRecording && (
+                <div className="bg-slate-950 border border-indigo-500/40 rounded-2xl p-4 flex flex-col gap-3 shadow-xl animate-in fade-in duration-150">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-indigo-400 flex items-center gap-2">
+                      <Play className="h-4 w-4 fill-indigo-400 text-indigo-400" />
+                      Now Playing: {activePlaybackRecording.fileName}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setActivePlaybackRecording(null)}
+                      className="text-xs text-slate-400 hover:text-white px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700"
+                    >
+                      Close Player
+                    </button>
+                  </div>
+
+                  <div className="rounded-xl overflow-hidden bg-black flex items-center justify-center">
+                    {activePlaybackRecording.isVideo ? (
+                      <video
+                        src={
+                          activePlaybackRecording.fileUrl.startsWith('http')
+                            ? activePlaybackRecording.fileUrl
+                            : `${API_URL.replace(/\/api\/?$/, '')}${activePlaybackRecording.fileUrl}`
+                        }
+                        controls
+                        autoPlay
+                        playsInline
+                        className="w-full max-h-72 object-contain"
+                      />
+                    ) : (
+                      <div className="py-6 px-4 w-full flex flex-col items-center justify-center gap-2">
+                        <div className="p-3 rounded-full bg-rose-500/20 border border-rose-500/30">
+                          <Volume2 className="h-6 w-6 text-rose-400" />
+                        </div>
+                        <audio
+                          src={
+                            activePlaybackRecording.fileUrl.startsWith('http')
+                              ? activePlaybackRecording.fileUrl
+                              : `${API_URL.replace(/\/api\/?$/, '')}${activePlaybackRecording.fileUrl}`
+                          }
+                          controls
+                          autoPlay
+                          className="w-full max-w-md mt-1"
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Recordings List */}
+              {workspaceRecordings.length === 0 ? (
+                <div className="py-12 flex flex-col items-center justify-center text-center px-4">
+                  <div className="p-4 rounded-3xl bg-slate-800/60 border border-slate-700/60 mb-3 text-slate-400">
+                    <Disc className="h-8 w-8 text-slate-500" />
+                  </div>
+                  <h4 className="text-sm font-bold text-slate-200">No Call Recordings Found</h4>
+                  <p className="text-xs text-slate-400 max-w-sm mt-1 leading-relaxed">
+                    Start a voice or video call and click <b>Record</b> to record the conversation. All recordings are automatically uploaded and saved directly to the database.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  {workspaceRecordings.map((rec) => {
+                    const downloadUrl = rec.fileUrl.startsWith('http')
+                      ? rec.fileUrl
+                      : `${API_URL.replace(/\/api\/?$/, '')}${rec.fileUrl}`;
+                    const isCurrentPlaying = activePlaybackRecording?.id === rec.id;
+                    const canDelete =
+                      rec.recordedById === user?.id || isWorkspaceOwner;
+
+                    return (
+                      <div
+                        key={rec.id}
+                        className={`p-3.5 rounded-2xl border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                          isCurrentPlaying
+                            ? 'bg-indigo-950/40 border-indigo-500/50 shadow-md'
+                            : 'bg-slate-800/40 hover:bg-slate-800/70 border-slate-700/60'
+                        }`}
+                      >
+                        <div className="flex items-start sm:items-center gap-3 min-w-0">
+                          <div
+                            className={`p-2.5 rounded-xl shrink-0 ${
+                              rec.isVideo
+                                ? 'bg-indigo-600/20 text-indigo-400 border border-indigo-500/30'
+                                : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                            }`}
+                          >
+                            {rec.isVideo ? <Video className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                          </div>
+
+                          <div className="min-w-0">
+                            <h5 className="text-xs font-bold text-slate-100 truncate" title={rec.fileName}>
+                              {rec.fileName}
+                            </h5>
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-400 mt-0.5">
+                              <span className="font-semibold text-slate-300">
+                                {formatCallDuration(rec.duration)}
+                              </span>
+                              <span>•</span>
+                              <span>{(rec.fileSize / (1024 * 1024)).toFixed(2)} MB</span>
+                              <span>•</span>
+                              <span>{new Date(rec.createdAt).toLocaleDateString()}</span>
+                              {rec.channel?.name && (
+                                <>
+                                  <span>•</span>
+                                  <span className="text-indigo-300">#{rec.channel.name}</span>
+                                </>
+                              )}
+                              <span>•</span>
+                              <span className="truncate max-w-[120px]">By {rec.recordedBy?.name || 'User'}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 self-end sm:self-center shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setActivePlaybackRecording(isCurrentPlaying ? null : rec)}
+                            className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                              isCurrentPlaying
+                                ? 'bg-indigo-600 text-white shadow'
+                                : 'bg-slate-700 hover:bg-slate-600 text-slate-200'
+                            }`}
+                          >
+                            <Play className="h-3.5 w-3.5" />
+                            <span>{isCurrentPlaying ? 'Stop' : 'Play'}</span>
+                          </button>
+
+                          <a
+                            href={downloadUrl}
+                            download={rec.fileName}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="p-1.5 px-2.5 rounded-xl bg-slate-700/80 hover:bg-slate-600 text-slate-200 text-xs font-semibold flex items-center gap-1 transition-all"
+                            title="Download recording"
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                            <span className="hidden sm:inline">Save</span>
+                          </a>
+
+                          {canDelete && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteRecording(rec.id)}
+                              className="p-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 transition-colors"
+                              title="Delete recording"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-5 py-3 border-t border-slate-800 flex items-center justify-between shrink-0 bg-slate-900/90 text-xs text-slate-400">
+              <span className="flex items-center gap-1.5">
+                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                Recordings are permanently saved in PostgreSQL & uploads folder
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowRecordingsModal(false);
+                  setActivePlaybackRecording(null);
+                }}
+                className="px-4 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold transition-colors"
+              >
+                Close
               </button>
             </div>
           </div>

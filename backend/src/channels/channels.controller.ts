@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Patch,
   Delete,
   Body,
   Param,
@@ -9,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { ChannelsService } from './channels.service.js';
 import { CreateChannelDto } from './dto/create-channel.dto.js';
+import { UpdateChannelDto } from './dto/update-channel.dto.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { CurrentUser } from '../auth/current-user.decorator.js';
 
@@ -57,6 +59,23 @@ export class ChannelsController {
     @Body('userId') targetUserId: string,
   ) {
     return this.channelsService.addMember(channelId, user.id, targetUserId);
+  }
+
+  @Patch('channels/:channelId')
+  async update(
+    @CurrentUser() user: { id: string },
+    @Param('channelId') channelId: string,
+    @Body() dto: UpdateChannelDto,
+  ) {
+    return this.channelsService.update(user.id, channelId, dto);
+  }
+
+  @Delete('channels/:channelId')
+  async delete(
+    @CurrentUser() user: { id: string },
+    @Param('channelId') channelId: string,
+  ) {
+    return this.channelsService.delete(user.id, channelId);
   }
 
   @Delete('channels/:channelId/members/:userId')

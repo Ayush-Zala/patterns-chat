@@ -7,6 +7,7 @@ import { PrismaService } from '../common/prisma.service.js';
 export interface JwtPayload {
   sub: string;
   email: string;
+  sessionId?: string;
 }
 
 @Injectable()
@@ -31,12 +32,17 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         name: true,
         avatarUrl: true,
         status: true,
+        currentSessionId: true,
         createdAt: true,
       },
     });
 
     if (!user) {
       throw new UnauthorizedException('User not found or session expired');
+    }
+
+    if (payload.sessionId && user.currentSessionId && payload.sessionId !== user.currentSessionId) {
+      throw new UnauthorizedException('SESSION_SUPERSEDED: Logged in from another device');
     }
 
     return user;

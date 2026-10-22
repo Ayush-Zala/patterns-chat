@@ -6,6 +6,8 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service.js';
 import { CreateChannelDto } from './dto/create-channel.dto.js';
+import { UpdateChannelDto } from './dto/update-channel.dto.js';
+import { MemberRole } from '@prisma/client';
 
 @Injectable()
 export class ChannelsService {
@@ -69,8 +71,14 @@ export class ChannelsService {
       },
     });
 
-    // If specific initial memberIds were selected, add them (only if caller is OWNER or ADMIN)
-    if (dto.memberIds && dto.memberIds.length > 0 && (membership.role === 'OWNER' || membership.role === 'ADMIN')) {
+    // If specific initial memberIds were selected, add them
+    const canAssignMembers =
+      membership.role === MemberRole.OWNER ||
+      membership.role === MemberRole.ADMIN ||
+      membership.role === MemberRole.MANAGER ||
+      membership.role === MemberRole.TEAM_LEAD;
+
+    if (dto.memberIds && dto.memberIds.length > 0 && canAssignMembers) {
       const validMemberIds = dto.memberIds.filter((id) => id !== userId);
       for (const targetId of validMemberIds) {
         await this.prisma.channelMember.upsert({
@@ -143,61 +151,6 @@ export class ChannelsService {
         },
       },
     });
-
-    // If workspace has no channels, automatically seed default Slack channels (#general and #random)
-    if (channels.length === 0) {
-      const general = await this.prisma.channel.create({
-        data: {
-          name: 'general',
-          topic: 'Company-wide announcements and team discussions',
-          isPrivate: false,
-          workspaceId,
-          createdById: userId,
-        },
-      });
-
-      const random = await this.prisma.channel.create({
-        data: {
-          name: 'random',
-          topic: 'Non-work banter, water cooler chats, and fun links',
-          isPrivate: false,
-          workspaceId,
-          createdById: userId,
-        },
-      });
-
-      // Add user to seeded channels
-      await this.prisma.channelMember.createMany({
-        data: [
-          { channelId: general.id, userId },
-          { channelId: random.id, userId },
-        ],
-      });
-
-      channels = await this.prisma.channel.findMany({
-        where: { workspaceId },
-        orderBy: { createdAt: 'asc' },
-        include: {
-          _count: {
-            select: { messages: true, members: true },
-          },
-          members: {
-            include: {
-              user: {
-                select: {
-                  id: true,
-                  name: true,
-                  email: true,
-                  avatarUrl: true,
-                  status: true,
-                  presence: true,
-                },
-              },
-            },
-          },
-        },
-      });
-    }
 
     return channels;
   }
@@ -338,7 +291,7 @@ export class ChannelsService {
       throw new NotFoundException('Channel not found');
     }
 
-    // Verify caller is OWNER or ADMIN of the workspace
+    // Verify caller is member of workspace and has authority
     const callerMember = await this.prisma.workspaceMember.findUnique({
       where: {
         workspaceId_userId: {
@@ -348,8 +301,16 @@ export class ChannelsService {
       },
     });
 
-    if (!callerMember || (callerMember.role !== 'OWNER' && callerMember.role !== 'ADMIN')) {
-      throw new ForbiddenException('Only workspace owners can add people to channels');
+    // Channel creator, Workspace Owner, Admin, Manager, or Team Lead can add members
+    const isCreator = channel.createdById === currentUserId;
+    const isOwner = callerMember?.role === MemberRole.OWNER;
+    const hasRoleAuthority =
+      callerMember?.role === MemberRole.ADMIN ||
+      callerMember?.role === MemberRole.MANAGER ||
+      callerMember?.role === MemberRole.TEAM_LEAD;
+
+    if (!callerMember || (!isCreator && !isOwner && !hasRoleAuthority)) {
+      throw new ForbiddenException('Only channel creators, Workspace Owners, Admins, Managers, and Team Leads can add people to channels');
     }
 
     const workspaceMember = await this.prisma.workspaceMember.findUnique({
@@ -433,6 +394,156 @@ export class ChannelsService {
 
     return {
       message: `User removed from #${channel.name}`,
+    };
+  }
+
+  async update(
+    userId: string,
+    channelId: string,
+    dto: UpdateChannelDto,
+  ) {
+    const channel = await this.prisma.channel.findUnique({
+      where: { id: channelId },
+      include: {
+        workspace: {
+          select: {
+            id: true,
+            ownerId: true,
+          },
+        },
+      },
+    });
+
+    if (!channel) {
+      throw new NotFoundException('Channel not found');
+    }
+
+    const member = await this.prisma.workspaceMember.findUnique({
+      where: {
+        workspaceId_userId: {
+          workspaceId: channel.workspaceId,
+          userId,
+        },
+      },
+    });
+
+    if (!member) {
+      throw new ForbiddenException('You do not belong to this workspace');
+    }
+
+    // Authority: Channel creator, Workspace Owner, Admin, Manager, or Team Lead
+    const isCreator = channel.createdById === userId;
+    const isOwner = member.role === MemberRole.OWNER || channel.workspace.ownerId === userId;
+    const isElevated =
+      member.role === MemberRole.ADMIN ||
+      member.role === MemberRole.MANAGER ||
+      member.role === MemberRole.TEAM_LEAD;
+
+    if (!isCreator && !isOwner && !isElevated) {
+      throw new ForbiddenException('You do not have permission to edit this channel. Only creator, Admin, Manager, or Team Lead can edit.');
+    }
+
+    let formattedName = channel.name;
+    if (dto.name) {
+      formattedName = dto.name
+        .toLowerCase()
+        .trim()
+        .replace(/\s+/g, '-')
+        .replace(/[^a-z0-9-_]/g, '');
+
+      if (formattedName !== channel.name) {
+        const existing = await this.prisma.channel.findUnique({
+          where: {
+            workspaceId_name: {
+              workspaceId: channel.workspaceId,
+              name: formattedName,
+            },
+          },
+        });
+        if (existing) {
+          throw new ConflictException(`Channel #${formattedName} already exists in this workspace`);
+        }
+      }
+    }
+
+    const updated = await this.prisma.channel.update({
+      where: { id: channelId },
+      data: {
+        name: formattedName,
+        topic: dto.topic !== undefined ? dto.topic : channel.topic,
+        isPrivate: dto.isPrivate !== undefined ? dto.isPrivate : channel.isPrivate,
+      },
+      include: {
+        _count: {
+          select: { messages: true, members: true },
+        },
+        members: {
+          include: {
+            user: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                avatarUrl: true,
+                status: true,
+                presence: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    return updated;
+  }
+
+  async delete(userId: string, channelId: string) {
+    const channel = await this.prisma.channel.findUnique({
+      where: { id: channelId },
+      include: {
+        workspace: {
+          select: {
+            id: true,
+            ownerId: true,
+          },
+        },
+      },
+    });
+
+    if (!channel) {
+      throw new NotFoundException('Channel not found');
+    }
+
+    const member = await this.prisma.workspaceMember.findUnique({
+      where: {
+        workspaceId_userId: {
+          workspaceId: channel.workspaceId,
+          userId,
+        },
+      },
+    });
+
+    if (!member) {
+      throw new ForbiddenException('You do not belong to this workspace');
+    }
+
+    // Channel creator, or Workspace Owner, or Admin can delete
+    const isCreator = channel.createdById === userId;
+    const isOwner = member.role === MemberRole.OWNER || channel.workspace.ownerId === userId;
+    const isAdmin = member.role === MemberRole.ADMIN;
+
+    if (!isCreator && !isOwner && !isAdmin) {
+      throw new ForbiddenException('Only the channel creator, Workspace Owner, or Admins can delete this channel');
+    }
+
+    await this.prisma.channel.delete({
+      where: { id: channelId },
+    });
+
+    return {
+      message: `Channel #${channel.name} was successfully deleted`,
+      deletedChannelId: channelId,
+      workspaceId: channel.workspaceId,
     };
   }
 }
