@@ -337,4 +337,78 @@ export class MessagesGateway implements OnGatewayConnection, OnGatewayDisconnect
       this.logger.log(`📞 Call declined for user ${data.toUserId}`);
     }
   }
+
+  @SubscribeMessage('toggle_video')
+  handleToggleVideo(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      toUserId: string;
+      videoEnabled: boolean;
+    },
+  ) {
+    if (data?.toUserId) {
+      const room = `user:${data.toUserId}`;
+      client.to(room).emit('peer_video_toggled', {
+        videoEnabled: data.videoEnabled,
+      });
+      this.logger.log(`📹 Video toggled to ${data.videoEnabled} for user ${data.toUserId}`);
+    }
+  }
+
+  @SubscribeMessage('renegotiate_call')
+  handleRenegotiateCall(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      toUserId: string;
+      signalData: any;
+    },
+  ) {
+    if (data?.toUserId) {
+      const room = `user:${data.toUserId}`;
+      client.to(room).emit('call_renegotiate', {
+        signalData: data.signalData,
+      });
+      this.logger.log(`🔄 Call renegotiation forwarded to user ${data.toUserId}`);
+    }
+  }
+
+  @SubscribeMessage('renegotiate_answer')
+  handleRenegotiateAnswer(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      toUserId: string;
+      signalData: any;
+    },
+  ) {
+    if (data?.toUserId) {
+      const room = `user:${data.toUserId}`;
+      client.to(room).emit('call_renegotiated', {
+        signalData: data.signalData,
+      });
+      this.logger.log(`🔄 Call renegotiation answer forwarded to user ${data.toUserId}`);
+    }
+  }
+
+  @SubscribeMessage('call_recording_state')
+  handleCallRecordingState(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      toUserId: string;
+      isRecording: boolean;
+      recordedByName?: string;
+    },
+  ) {
+    if (data?.toUserId) {
+      const room = `user:${data.toUserId}`;
+      client.to(room).emit('peer_recording_state', {
+        isRecording: data.isRecording,
+        recordedByName: data.recordedByName,
+      });
+      this.logger.log(`⏺️ Call recording state (${data.isRecording}) forwarded to user ${data.toUserId}`);
+    }
+  }
 }

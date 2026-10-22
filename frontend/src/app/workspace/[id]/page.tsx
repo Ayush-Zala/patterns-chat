@@ -72,6 +72,8 @@ import {
   MicOff,
   MonitorUp,
   Menu,
+  Disc,
+  Square,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { Workspace, WorkspaceMember } from '@/types/auth';
@@ -284,6 +286,19 @@ function WorkspaceShellContent() {
   const [isVideoMuted, setIsVideoMuted] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [callNotificationMsg, setCallNotificationMsg] = useState<string | null>(null);
+  const [hasRemoteVideo, setHasRemoteVideo] = useState(false);
+  const [hasLocalCamera, setHasLocalCamera] = useState(true);
+  const [audioOutputDevices, setAudioOutputDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedAudioOutput, setSelectedAudioOutput] = useState<string>('default');
+  const [showSpeakerMenu, setShowSpeakerMenu] = useState(false);
+  const [isSpeakerOn, setIsSpeakerOn] = useState(true);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isPeerRecording, setIsPeerRecording] = useState(false);
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const recordingAudioCtxRef = useRef<AudioContext | null>(null);
 
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
@@ -918,48 +933,79 @@ function WorkspaceShellContent() {
       autoGainControl: true,
     };
 
-    try {
-      if (isVideo) {
-        try {
-          return await navigator.mediaDevices.getUserMedia({
-            audio: audioConstraints,
-            video: {
-              facingMode: 'user',
-              width: { ideal: 1280, max: 1920 },
-              height: { ideal: 720, max: 1080 },
-            },
-          });
-        } catch (videoErr) {
-          console.warn('High-definition camera constraint failed, retrying basic video:', videoErr);
-          return await navigator.mediaDevices.getUserMedia({
-            audio: audioConstraints,
-            video: true,
-          });
+    if (isVideo) {
+      // 1. Try high-definition user-facing camera first
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: audioConstraints,
+          video: {
+            facingMode: 'user',
+            width: { ideal: 1280, max: 1920 },
+            height: { ideal: 720, max: 1080 },
+          },
+        });
+        setHasLocalCamera(true);
+        setIsVideoMuted(false);
+        return stream;
+      } catch (hdErr: any) {
+        console.warn('HD camera constraint failed, retrying standard video:', hdErr);
+      }
+
+      // 2. Try basic standard video
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: audioConstraints,
+          video: true,
+        });
+        setHasLocalCamera(true);
+        setIsVideoMuted(false);
+        return stream;
+      } catch (videoErr: any) {
+        console.warn('Camera not found or camera access failed, falling back to microphone-only stream:', videoErr);
+      }
+
+      // 3. Graceful Fallback: The device has NO webcam or camera permission was denied.
+      // Automatically fallback to audio-only stream so the user can still call and participate!
+      try {
+        const audioOnlyStream = await navigator.mediaDevices.getUserMedia({
+          audio: audioConstraints,
+          video: false,
+        });
+        setHasLocalCamera(false);
+        setIsVideoMuted(true);
+        setCallNotificationMsg('No camera detected on your device — connected with microphone only');
+        setTimeout(() => setCallNotificationMsg(null), 6000);
+        return audioOnlyStream;
+      } catch (audioErr: any) {
+        console.error('Microphone access also failed:', audioErr);
+        if (audioErr.name === 'NotAllowedError' || audioErr.name === 'PermissionDeniedError') {
+          alert('Microphone permission is required to join the call. Please allow microphone access in your browser or device settings.');
+        } else if (audioErr.name === 'NotFoundError' || audioErr.name === 'DevicesNotFoundError') {
+          alert('No microphone was found on your device. Please plug in a microphone or headset.');
+        } else {
+          alert(`Could not access audio device: ${audioErr.message || 'Microphone error'}`);
         }
-      } else {
+        throw audioErr;
+      }
+    } else {
+      // Standard audio-only call
+      setHasLocalCamera(false);
+      try {
         return await navigator.mediaDevices.getUserMedia({
           audio: audioConstraints,
           video: false,
         });
+      } catch (audioErr: any) {
+        console.error('Microphone access failed:', audioErr);
+        if (audioErr.name === 'NotAllowedError' || audioErr.name === 'PermissionDeniedError') {
+          alert('Microphone permission is required to join the voice call. Please allow microphone access in your browser or device settings.');
+        } else if (audioErr.name === 'NotFoundError' || audioErr.name === 'DevicesNotFoundError') {
+          alert('No microphone was found on your device. Please connect a microphone or headset.');
+        } else {
+          alert(`Could not access microphone: ${audioErr.message || 'Audio error'}`);
+        }
+        throw audioErr;
       }
-    } catch (err: any) {
-      console.error('Permission denied or media hardware error:', err);
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        alert(
-          isVideo
-            ? 'Camera and Microphone permissions are required to join the video call. Please allow microphone and camera access in your browser or device settings.'
-            : 'Microphone permission is required to join the voice call. Please allow microphone access in your browser or device settings.'
-        );
-      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
-        alert(
-          isVideo
-            ? 'No camera or microphone was found on your device.'
-            : 'No microphone was found on your device.'
-        );
-      } else {
-        alert(`Could not access media devices: ${err.message || 'Permission or hardware error'}`);
-      }
-      throw err;
     }
   }
 
@@ -1004,6 +1050,23 @@ function WorkspaceShellContent() {
     setIsMicMuted(false);
     setIsVideoMuted(false);
     setIsScreenSharing(false);
+    setHasRemoteVideo(false);
+    setHasLocalCamera(true);
+    setShowSpeakerMenu(false);
+    setSelectedAudioOutput('default');
+    setIsSpeakerOn(true);
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (e) {}
+    }
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    setIsRecording(false);
+    setIsPeerRecording(false);
+    setRecordingDuration(0);
   }
 
   async function handleStartCall(targetUser: { id: string; name: string; avatarUrl?: string }, isVideo: boolean) {
@@ -1039,6 +1102,15 @@ function WorkspaceShellContent() {
         pc.addTrack(track, stream);
       });
 
+      // If local device has NO video track (no camera or audio call), add transceiver so remote peer's camera video can be received!
+      if (stream.getVideoTracks().length === 0) {
+        try {
+          pc.addTransceiver('video', { direction: 'recvonly' });
+        } catch (tErr) {
+          console.warn('Transceiver addition warning:', tErr);
+        }
+      }
+
       pc.onicecandidate = (event) => {
         if (event.candidate) {
           socket.emit('ice_candidate', {
@@ -1050,29 +1122,55 @@ function WorkspaceShellContent() {
 
       pc.ontrack = (event) => {
         console.log('Received remote media track:', event.track.kind);
+        if (event.track.kind === 'video') {
+          setHasRemoteVideo(true);
+          setCallType('video');
+          event.track.onunmute = () => setHasRemoteVideo(true);
+          event.track.onended = () => setHasRemoteVideo(false);
+        }
+
+        // Support both event.streams and direct track attachment
+        if (!remoteStreamRef.current) {
+          remoteStreamRef.current = new MediaStream();
+        }
         if (event.streams && event.streams[0]) {
-          const remoteStream = event.streams[0];
-          remoteStreamRef.current = remoteStream;
-
-          // Dedicated mobile and desktop audio player
-          if (remoteAudioRef.current) {
-            remoteAudioRef.current.srcObject = remoteStream;
-            remoteAudioRef.current.volume = 1.0;
-            remoteAudioRef.current.play().catch((e) => {
-              console.warn('remoteAudioRef play error:', e);
-            });
+          event.streams[0].getTracks().forEach((t) => {
+            if (!remoteStreamRef.current!.getTracks().some((existing) => existing.id === t.id)) {
+              remoteStreamRef.current!.addTrack(t);
+            }
+          });
+        } else if (event.track) {
+          if (!remoteStreamRef.current.getTracks().some((existing) => existing.id === event.track.id)) {
+            remoteStreamRef.current.addTrack(event.track);
           }
+        }
 
-          if (remoteVideoRef.current) {
-            remoteVideoRef.current.srcObject = remoteStream;
-            remoteVideoRef.current.play().catch((e) => {
-              console.warn('remoteVideoRef play error:', e);
-            });
-          }
+        const remoteStream = remoteStreamRef.current;
+        if (remoteStream.getVideoTracks().length > 0) {
+          setHasRemoteVideo(true);
+        }
+
+        // Dedicated mobile and desktop audio player
+        if (remoteAudioRef.current) {
+          remoteAudioRef.current.srcObject = remoteStream;
+          remoteAudioRef.current.volume = 1.0;
+          remoteAudioRef.current.play().catch((e) => {
+            console.warn('remoteAudioRef play error:', e);
+          });
+        }
+
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = remoteStream;
+          remoteVideoRef.current.play().catch((e) => {
+            console.warn('remoteVideoRef play error:', e);
+          });
         }
       };
 
-      const offer = await pc.createOffer();
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true,
+      });
       await pc.setLocalDescription(offer);
 
       socket.emit('call_user', {
@@ -1088,7 +1186,7 @@ function WorkspaceShellContent() {
     } catch (err) {
       console.error('Failed to initiate call:', err);
       cleanupCall(false);
-      setCallNotificationMsg('Could not initiate call (Microphone/Camera permission needed)');
+      setCallNotificationMsg('Could not initiate call (Microphone permission needed)');
       setTimeout(() => setCallNotificationMsg(null), 4000);
     }
   }
@@ -1123,6 +1221,16 @@ function WorkspaceShellContent() {
         pc.addTrack(track, stream);
       });
 
+      // If local device has NO video track (no camera), but this is a video call:
+      // Add a video transceiver with direction 'recvonly' so we can still receive caller's camera video!
+      if (isVideo && stream.getVideoTracks().length === 0) {
+        try {
+          pc.addTransceiver('video', { direction: 'recvonly' });
+        } catch (tErr) {
+          console.warn('Transceiver addition warning on accept:', tErr);
+        }
+      }
+
       pc.onicecandidate = (event) => {
         if (event.candidate) {
           socket.emit('ice_candidate', {
@@ -1134,25 +1242,48 @@ function WorkspaceShellContent() {
 
       pc.ontrack = (event) => {
         console.log('Received remote media track on accept:', event.track.kind);
+        if (event.track.kind === 'video') {
+          setHasRemoteVideo(true);
+          setCallType('video');
+          event.track.onunmute = () => setHasRemoteVideo(true);
+          event.track.onended = () => setHasRemoteVideo(false);
+        }
+
+        // Support both event.streams and direct track attachment
+        if (!remoteStreamRef.current) {
+          remoteStreamRef.current = new MediaStream();
+        }
         if (event.streams && event.streams[0]) {
-          const remoteStream = event.streams[0];
-          remoteStreamRef.current = remoteStream;
-
-          // Dedicated mobile and desktop audio player
-          if (remoteAudioRef.current) {
-            remoteAudioRef.current.srcObject = remoteStream;
-            remoteAudioRef.current.volume = 1.0;
-            remoteAudioRef.current.play().catch((e) => {
-              console.warn('remoteAudioRef play error:', e);
-            });
+          event.streams[0].getTracks().forEach((t) => {
+            if (!remoteStreamRef.current!.getTracks().some((existing) => existing.id === t.id)) {
+              remoteStreamRef.current!.addTrack(t);
+            }
+          });
+        } else if (event.track) {
+          if (!remoteStreamRef.current.getTracks().some((existing) => existing.id === event.track.id)) {
+            remoteStreamRef.current.addTrack(event.track);
           }
+        }
 
-          if (remoteVideoRef.current) {
-            remoteVideoRef.current.srcObject = remoteStream;
-            remoteVideoRef.current.play().catch((e) => {
-              console.warn('remoteVideoRef play error:', e);
-            });
-          }
+        const remoteStream = remoteStreamRef.current;
+        if (remoteStream.getVideoTracks().length > 0) {
+          setHasRemoteVideo(true);
+        }
+
+        // Dedicated mobile and desktop audio player
+        if (remoteAudioRef.current) {
+          remoteAudioRef.current.srcObject = remoteStream;
+          remoteAudioRef.current.volume = 1.0;
+          remoteAudioRef.current.play().catch((e) => {
+            console.warn('remoteAudioRef play error:', e);
+          });
+        }
+
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = remoteStream;
+          remoteVideoRef.current.play().catch((e) => {
+            console.warn('remoteVideoRef play error:', e);
+          });
         }
       };
 
@@ -1194,6 +1325,199 @@ function WorkspaceShellContent() {
     setCallStatus('idle');
   }
 
+  async function loadAudioOutputDevices() {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.enumerateDevices) return;
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const outputs = devices.filter((d) => d.kind === 'audiooutput');
+      setAudioOutputDevices(outputs);
+    } catch (err) {
+      console.warn('Could not enumerate audio output devices:', err);
+    }
+  }
+
+  async function switchAudioOutput(deviceId: string, deviceLabel?: string) {
+    setSelectedAudioOutput(deviceId);
+    setShowSpeakerMenu(false);
+
+    try {
+      if (remoteAudioRef.current && 'setSinkId' in HTMLMediaElement.prototype) {
+        await (remoteAudioRef.current as any).setSinkId(deviceId);
+      }
+      if (remoteVideoRef.current && 'setSinkId' in HTMLMediaElement.prototype) {
+        await (remoteVideoRef.current as any).setSinkId(deviceId);
+      }
+
+      const label = deviceLabel || (deviceId === 'default' ? 'Default Speaker' : 'Speaker');
+      setCallNotificationMsg(`Audio output: ${label}`);
+      setTimeout(() => setCallNotificationMsg(null), 3500);
+    } catch (e: any) {
+      console.warn('setSinkId error:', e);
+      setCallNotificationMsg('Could not switch audio output on this device');
+      setTimeout(() => setCallNotificationMsg(null), 3000);
+    }
+  }
+
+  async function startRecording() {
+    if (callStatus !== 'connected') {
+      alert('You can only record an active, connected call.');
+      return;
+    }
+
+    try {
+      recordedChunksRef.current = [];
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) {
+        alert('AudioContext is not supported in this browser.');
+        return;
+      }
+      const audioCtx = new AudioCtx();
+      recordingAudioCtxRef.current = audioCtx;
+      const dest = audioCtx.createMediaStreamDestination();
+
+      // 1. Mix local microphone audio
+      if (localStreamRef.current && localStreamRef.current.getAudioTracks().length > 0) {
+        try {
+          const localAudioSource = audioCtx.createMediaStreamSource(localStreamRef.current);
+          localAudioSource.connect(dest);
+        } catch (e) {
+          console.warn('Could not connect local audio to recorder:', e);
+        }
+      }
+
+      // 2. Mix remote peer audio
+      if (remoteStreamRef.current && remoteStreamRef.current.getAudioTracks().length > 0) {
+        try {
+          const remoteAudioSource = audioCtx.createMediaStreamSource(remoteStreamRef.current);
+          remoteAudioSource.connect(dest);
+        } catch (e) {
+          console.warn('Could not connect remote audio to recorder:', e);
+        }
+      }
+
+      // 3. Assemble combined recording stream
+      const recordStream = new MediaStream();
+      const mixedAudioTrack = dest.stream.getAudioTracks()[0];
+      if (mixedAudioTrack) {
+        recordStream.addTrack(mixedAudioTrack);
+      }
+
+      // For video calls, attach live video track (remote video, or local camera / screen share)
+      const activeVideoTrack =
+        remoteStreamRef.current?.getVideoTracks().find((t) => t.readyState === 'live') ||
+        localStreamRef.current?.getVideoTracks().find((t) => t.readyState === 'live');
+
+      const isVideoRecording = callType === 'video' && !!activeVideoTrack;
+      if (isVideoRecording && activeVideoTrack) {
+        recordStream.addTrack(activeVideoTrack);
+      }
+
+      // Determine best supported MIME type
+      let mimeType = '';
+      const candidateTypes = [
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp8,opus',
+        'video/webm',
+        'video/mp4',
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/ogg',
+      ];
+      for (const type of candidateTypes) {
+        if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(type)) {
+          mimeType = type;
+          break;
+        }
+      }
+
+      const recorder = new MediaRecorder(recordStream, mimeType ? { mimeType } : undefined);
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          recordedChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        const hasVideo = recordStream.getVideoTracks().length > 0;
+        const blobType = mimeType || (hasVideo ? 'video/webm' : 'audio/webm');
+        const blob = new Blob(recordedChunksRef.current, { type: blobType });
+        if (blob.size > 0) {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.style.display = 'none';
+          a.href = url;
+          const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+          const ext = hasVideo ? 'webm' : 'webm';
+          a.download = `${hasVideo ? 'video' : 'call'}-recording-${callPeerRef.current?.name || 'teamflow'}-${timestamp}.${ext}`;
+          document.body.appendChild(a);
+          a.click();
+          setTimeout(() => {
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+          }, 2000);
+
+          setCallNotificationMsg('Call recording downloaded!');
+          setTimeout(() => setCallNotificationMsg(null), 5000);
+        }
+        if (recordingAudioCtxRef.current) {
+          try {
+            recordingAudioCtxRef.current.close();
+          } catch (e) {}
+          recordingAudioCtxRef.current = null;
+        }
+      };
+
+      recorder.start(1000);
+      setIsRecording(true);
+      setRecordingDuration(0);
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingDuration((prev) => prev + 1);
+      }, 1000);
+
+      // Notify remote peer that call is being recorded
+      if (callPeerRef.current?.id) {
+        getSocket().emit('call_recording_state', {
+          toUserId: callPeerRef.current.id,
+          isRecording: true,
+          recordedByName: user?.name,
+        });
+      }
+
+      setCallNotificationMsg('Call recording started');
+      setTimeout(() => setCallNotificationMsg(null), 3000);
+    } catch (err: any) {
+      console.error('Failed to start recording:', err);
+      alert(`Could not start call recording: ${err.message || 'MediaRecorder error'}`);
+      setIsRecording(false);
+    }
+  }
+
+  function stopRecording() {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (e) {
+        console.warn('Error stopping mediaRecorder:', e);
+      }
+    }
+    setIsRecording(false);
+    setRecordingDuration(0);
+
+    if (callPeerRef.current?.id) {
+      getSocket().emit('call_recording_state', {
+        toUserId: callPeerRef.current.id,
+        isRecording: false,
+      });
+    }
+  }
+
   function toggleMic() {
     if (localStreamRef.current) {
       const audioTrack = localStreamRef.current.getAudioTracks()[0];
@@ -1204,19 +1528,91 @@ function WorkspaceShellContent() {
     }
   }
 
-  function toggleCamera() {
-    if (localStreamRef.current) {
-      const videoTrack = localStreamRef.current.getVideoTracks()[0];
-      if (videoTrack) {
-        videoTrack.enabled = !videoTrack.enabled;
-        setIsVideoMuted(!videoTrack.enabled);
+  async function toggleCamera() {
+    const existingVideoTrack = localStreamRef.current?.getVideoTracks()[0];
+    if (existingVideoTrack) {
+      const willBeEnabled = !existingVideoTrack.enabled;
+      existingVideoTrack.enabled = willBeEnabled;
+      setIsVideoMuted(!willBeEnabled);
+
+      if (callPeerRef.current?.id) {
+        getSocket().emit('toggle_video', {
+          toUserId: callPeerRef.current.id,
+          videoEnabled: willBeEnabled,
+        });
       }
+      return;
+    }
+
+    // No local camera track existed initially (device had no camera initially, joined mic-only, or audio call)
+    try {
+      const camStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: 'user',
+          width: { ideal: 1280, max: 1920 },
+          height: { ideal: 720, max: 1080 },
+        },
+      });
+      const newTrack = camStream.getVideoTracks()[0];
+      if (newTrack) {
+        if (!localStreamRef.current) {
+          localStreamRef.current = new MediaStream();
+        }
+        localStreamRef.current.addTrack(newTrack);
+        setHasLocalCamera(true);
+        setIsVideoMuted(false);
+        setCallType('video');
+
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = localStreamRef.current;
+          localVideoRef.current.play().catch(() => {});
+        }
+
+        if (peerConnectionRef.current) {
+          const pc = peerConnectionRef.current;
+          const videoTransceiver = pc.getTransceivers().find((t) => t.receiver.track.kind === 'video');
+          if (videoTransceiver && videoTransceiver.sender) {
+            videoTransceiver.direction = 'sendrecv';
+            await videoTransceiver.sender.replaceTrack(newTrack);
+          } else {
+            const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+            if (sender) {
+              await sender.replaceTrack(newTrack);
+            } else {
+              pc.addTrack(newTrack, localStreamRef.current);
+              const offer = await pc.createOffer();
+              await pc.setLocalDescription(offer);
+              if (callPeerRef.current?.id) {
+                getSocket().emit('renegotiate_call', {
+                  toUserId: callPeerRef.current.id,
+                  signalData: offer,
+                });
+              }
+            }
+          }
+        }
+
+        if (callPeerRef.current?.id) {
+          getSocket().emit('toggle_video', {
+            toUserId: callPeerRef.current.id,
+            videoEnabled: true,
+          });
+        }
+
+        setCallNotificationMsg('Camera activated');
+        setTimeout(() => setCallNotificationMsg(null), 3000);
+      }
+    } catch (camErr) {
+      setHasLocalCamera(false);
+      setCallNotificationMsg('No camera detected on this device');
+      setTimeout(() => setCallNotificationMsg(null), 4000);
     }
   }
 
   async function toggleScreenShare() {
     if (!peerConnectionRef.current) return;
     try {
+      const pc = peerConnectionRef.current;
       if (!isScreenSharing) {
         if (!navigator.mediaDevices?.getDisplayMedia) {
           alert('Screen sharing is not supported in this browser.');
@@ -1224,41 +1620,114 @@ function WorkspaceShellContent() {
         }
         const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
         const screenTrack = screenStream.getVideoTracks()[0];
-        const sender = peerConnectionRef.current.getSenders().find((s) => s.track?.kind === 'video');
-        if (sender) {
-          sender.replaceTrack(screenTrack);
+        if (!screenTrack) return;
+
+        // Automatically upgrade layout to video mode so the screen is visible
+        setCallType('video');
+
+        const videoTransceiver = pc.getTransceivers().find((t) => t.receiver.track.kind === 'video');
+        if (videoTransceiver && videoTransceiver.sender) {
+          videoTransceiver.direction = 'sendrecv';
+          await videoTransceiver.sender.replaceTrack(screenTrack);
+        } else {
+          const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+          if (sender) {
+            await sender.replaceTrack(screenTrack);
+          } else {
+            pc.addTrack(screenTrack, screenStream);
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            if (callPeerRef.current?.id) {
+              getSocket().emit('renegotiate_call', {
+                toUserId: callPeerRef.current.id,
+                signalData: offer,
+              });
+            }
+          }
         }
+
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = screenStream;
+          localVideoRef.current.play().catch(() => {});
         }
-        screenTrack.onended = () => {
-          if (localStreamRef.current) {
-            const originalVideoTrack = localStreamRef.current.getVideoTracks()[0];
-            if (sender && originalVideoTrack) {
-              sender.replaceTrack(originalVideoTrack);
-            }
-            if (localVideoRef.current) {
-              localVideoRef.current.srcObject = localStreamRef.current;
-            }
-          }
+
+        if (callPeerRef.current?.id) {
+          getSocket().emit('toggle_video', {
+            toUserId: callPeerRef.current.id,
+            videoEnabled: true,
+          });
+        }
+
+        setCallNotificationMsg('You started sharing your screen');
+        setTimeout(() => setCallNotificationMsg(null), 3000);
+
+        screenTrack.onended = async () => {
           setIsScreenSharing(false);
-        };
-        setIsScreenSharing(true);
-      } else {
-        const sender = peerConnectionRef.current.getSenders().find((s) => s.track?.kind === 'video');
-        if (localStreamRef.current) {
-          const originalVideoTrack = localStreamRef.current.getVideoTracks()[0];
-          if (sender && originalVideoTrack) {
-            sender.replaceTrack(originalVideoTrack);
+          const originalVideoTrack = localStreamRef.current?.getVideoTracks()[0];
+          if (videoTransceiver && videoTransceiver.sender) {
+            if (originalVideoTrack && originalVideoTrack.enabled) {
+              videoTransceiver.direction = 'sendrecv';
+              await videoTransceiver.sender.replaceTrack(originalVideoTrack);
+            } else {
+              videoTransceiver.direction = 'recvonly';
+              await videoTransceiver.sender.replaceTrack(null);
+              if (callPeerRef.current?.id) {
+                getSocket().emit('toggle_video', {
+                  toUserId: callPeerRef.current.id,
+                  videoEnabled: false,
+                });
+              }
+            }
+          } else {
+            const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+            if (sender) {
+              await sender.replaceTrack(originalVideoTrack || null);
+            }
           }
+
           if (localVideoRef.current) {
             localVideoRef.current.srcObject = localStreamRef.current;
           }
+        };
+
+        setIsScreenSharing(true);
+      } else {
+        // Stop screen sharing manually
+        const originalVideoTrack = localStreamRef.current?.getVideoTracks()[0];
+        const videoTransceiver = pc.getTransceivers().find((t) => t.receiver.track.kind === 'video');
+        if (videoTransceiver && videoTransceiver.sender) {
+          if (originalVideoTrack && originalVideoTrack.enabled) {
+            videoTransceiver.direction = 'sendrecv';
+            await videoTransceiver.sender.replaceTrack(originalVideoTrack);
+          } else {
+            videoTransceiver.direction = 'recvonly';
+            await videoTransceiver.sender.replaceTrack(null);
+            if (callPeerRef.current?.id) {
+              getSocket().emit('toggle_video', {
+                toUserId: callPeerRef.current.id,
+                videoEnabled: false,
+              });
+            }
+          }
+        } else {
+          const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+          if (sender) {
+            await sender.replaceTrack(originalVideoTrack || null);
+          }
         }
+
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = localStreamRef.current;
+        }
+
         setIsScreenSharing(false);
+        setCallNotificationMsg('Screen sharing stopped');
+        setTimeout(() => setCallNotificationMsg(null), 3000);
       }
-    } catch (err) {
-      console.error('Screen sharing error:', err);
+    } catch (err: any) {
+      if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
+        console.error('Screen sharing error:', err);
+      }
       setIsScreenSharing(false);
     }
   }
@@ -1277,15 +1746,18 @@ function WorkspaceShellContent() {
   }, [callStatus, isVideoMuted]);
 
   useEffect(() => {
-    if (callStatus === 'connected' && remoteStreamRef.current) {
-      if (remoteAudioRef.current) {
-        remoteAudioRef.current.srcObject = remoteStreamRef.current;
-        remoteAudioRef.current.volume = 1.0;
-        remoteAudioRef.current.play().catch((e) => console.warn('remoteAudio play failed:', e));
-      }
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = remoteStreamRef.current;
-        remoteVideoRef.current.play().catch((e) => console.warn('remoteVideo play failed:', e));
+    if (callStatus === 'connected') {
+      loadAudioOutputDevices();
+      if (remoteStreamRef.current) {
+        if (remoteAudioRef.current) {
+          remoteAudioRef.current.srcObject = remoteStreamRef.current;
+          remoteAudioRef.current.volume = 1.0;
+          remoteAudioRef.current.play().catch((e) => console.warn('remoteAudio play failed:', e));
+        }
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = remoteStreamRef.current;
+          remoteVideoRef.current.play().catch((e) => console.warn('remoteVideo play failed:', e));
+        }
       }
     }
   }, [callStatus]);
@@ -1358,11 +1830,69 @@ function WorkspaceShellContent() {
       setTimeout(() => setCallNotificationMsg(null), 3000);
     }
 
+    function handlePeerVideoToggled(data: { videoEnabled: boolean }) {
+      setHasRemoteVideo(data.videoEnabled);
+      if (data.videoEnabled) {
+        setCallType('video');
+        if (remoteVideoRef.current && remoteStreamRef.current) {
+          remoteVideoRef.current.srcObject = remoteStreamRef.current;
+          remoteVideoRef.current.play().catch(() => {});
+        }
+      }
+    }
+
+    async function handleCallRenegotiate(data: { signalData: any }) {
+      if (!peerConnectionRef.current) return;
+      try {
+        const pc = peerConnectionRef.current;
+        await pc.setRemoteDescription(new RTCSessionDescription(data.signalData));
+        for (const cand of pendingCandidatesRef.current) {
+          await pc.addIceCandidate(new RTCIceCandidate(cand)).catch(console.error);
+        }
+        pendingCandidatesRef.current = [];
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        if (callPeerRef.current?.id) {
+          getSocket().emit('renegotiate_answer', {
+            toUserId: callPeerRef.current.id,
+            signalData: answer,
+          });
+        }
+        setCallType('video');
+      } catch (e) {
+        console.warn('Call renegotiation failed:', e);
+      }
+    }
+
+    async function handleCallRenegotiated(data: { signalData: any }) {
+      if (!peerConnectionRef.current) return;
+      try {
+        await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data.signalData));
+      } catch (e) {
+        console.warn('Setting remote description on renegotiated failed:', e);
+      }
+    }
+
+    function handlePeerRecordingState(data: { isRecording: boolean; recordedByName?: string }) {
+      setIsPeerRecording(data.isRecording);
+      if (data.isRecording) {
+        setCallNotificationMsg(`${data.recordedByName || 'Teammate'} started recording this call`);
+        setTimeout(() => setCallNotificationMsg(null), 5000);
+      } else {
+        setCallNotificationMsg('Recording stopped');
+        setTimeout(() => setCallNotificationMsg(null), 3000);
+      }
+    }
+
     socket.on('incoming_call', handleIncomingCall);
     socket.on('call_accepted', handleCallAccepted);
     socket.on('ice_candidate', handleIceCandidate);
     socket.on('call_ended', handleCallEnded);
     socket.on('call_declined', handleCallDeclined);
+    socket.on('peer_video_toggled', handlePeerVideoToggled);
+    socket.on('call_renegotiate', handleCallRenegotiate);
+    socket.on('call_renegotiated', handleCallRenegotiated);
+    socket.on('peer_recording_state', handlePeerRecordingState);
 
     return () => {
       socket.emit('leave_user', { userId: user.id });
@@ -1371,6 +1901,10 @@ function WorkspaceShellContent() {
       socket.off('ice_candidate', handleIceCandidate);
       socket.off('call_ended', handleCallEnded);
       socket.off('call_declined', handleCallDeclined);
+      socket.off('peer_video_toggled', handlePeerVideoToggled);
+      socket.off('call_renegotiate', handleCallRenegotiate);
+      socket.off('call_renegotiated', handleCallRenegotiated);
+      socket.off('peer_recording_state', handlePeerRecordingState);
     };
   }, [user?.id]);
 
@@ -6905,7 +7439,7 @@ function WorkspaceShellContent() {
               Incoming {incomingCall.isVideo ? 'Video' : 'Audio'} Call...
             </p>
             <p className="text-[10px] text-slate-500 mt-2 bg-slate-800/60 px-3 py-1 rounded-full border border-slate-700/50">
-              {incomingCall.isVideo ? 'Camera & Mic permission required' : 'Microphone permission required'}
+              {incomingCall.isVideo ? 'Microphone & Camera (or Mic only if no camera)' : 'Microphone permission required'}
             </p>
 
             {/* Answer / Decline buttons */}
@@ -6937,7 +7471,15 @@ function WorkspaceShellContent() {
       ───────────────────────────────────────────────────────────── */}
       {(callStatus === 'calling' || callStatus === 'connected') && callPeer && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-0 sm:p-4 animate-in fade-in duration-200">
-          <div className="w-full h-full sm:h-auto sm:max-w-3xl sm:rounded-3xl bg-slate-900 border sm:border-slate-700/80 shadow-2xl overflow-hidden flex flex-col justify-between sm:justify-start text-white">
+          <div className="w-full h-full sm:h-auto sm:max-w-3xl sm:rounded-3xl bg-slate-900 border sm:border-slate-700/80 shadow-2xl overflow-hidden flex flex-col justify-between sm:justify-start text-white relative">
+            {/* Call Notification Toast Banner */}
+            {callNotificationMsg && (
+              <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 max-w-[90%] px-4 py-2 rounded-xl bg-slate-800/95 border border-amber-500/50 text-amber-300 text-xs font-medium shadow-2xl flex items-center gap-2 backdrop-blur-sm animate-in fade-in slide-in-from-top-2">
+                <span className="h-2 w-2 rounded-full bg-amber-400 shrink-0 animate-pulse" />
+                <span>{callNotificationMsg}</span>
+              </div>
+            )}
+
             {/* Dedicated Remote Audio Output - Always mounted & unmuted for crystal-clear bidirectional sound */}
             <audio
               ref={remoteAudioRef}
@@ -6973,6 +7515,20 @@ function WorkspaceShellContent() {
               </div>
 
               <div className="flex items-center gap-2">
+                {/* Active Recording Indicator Badge */}
+                {isRecording && (
+                  <span className="px-2.5 py-1 rounded-full text-xs font-mono font-bold bg-rose-500/20 border border-rose-500/60 text-rose-400 flex items-center gap-1.5 animate-pulse shadow-sm shadow-rose-500/30">
+                    <span className="h-2 w-2 rounded-full bg-rose-500" />
+                    <span>REC {formatCallDuration(recordingDuration)}</span>
+                  </span>
+                )}
+                {isPeerRecording && !isRecording && (
+                  <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-500/20 border border-rose-500/60 text-rose-400 flex items-center gap-1.5 animate-pulse">
+                    <span className="h-2 w-2 rounded-full bg-rose-500" />
+                    <span>Recording in progress</span>
+                  </span>
+                )}
+
                 <span className="px-3 py-1 rounded-full text-xs font-semibold bg-slate-700/70 border border-slate-600 text-slate-300 flex items-center gap-1.5">
                   {callType === 'video' ? (
                     <>
@@ -6999,6 +7555,8 @@ function WorkspaceShellContent() {
                     autoPlay
                     playsInline
                     muted
+                    onPlaying={() => setHasRemoteVideo(true)}
+                    onLoadedData={() => setHasRemoteVideo(true)}
                     className="w-full h-full min-h-[300px] sm:h-[380px] md:h-[440px] object-cover bg-slate-950"
                   />
 
@@ -7018,8 +7576,27 @@ function WorkspaceShellContent() {
                     </div>
                   )}
 
+                  {/* Remote Peer Without Video / Camera Off Fallback */}
+                  {callStatus === 'connected' && !hasRemoteVideo && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/95 backdrop-blur-xs z-10">
+                      <div className="relative">
+                        <div className="absolute -inset-4 rounded-full bg-indigo-500/10 animate-pulse" />
+                        <img
+                          src={callPeer.avatarUrl || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
+                          alt={callPeer.name}
+                          className="h-24 w-24 rounded-full object-cover border-4 border-slate-700 shadow-xl"
+                        />
+                      </div>
+                      <h4 className="mt-4 font-bold text-base text-white">{callPeer.name}</h4>
+                      <div className="flex items-center gap-2 mt-2 px-3 py-1 rounded-full bg-slate-800/80 border border-slate-700/60 text-slate-300 text-xs font-medium">
+                        <Mic className="h-3.5 w-3.5 text-emerald-400" />
+                        <span>Connected (Microphone only)</span>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Local video PiP (bottom right) */}
-                  <div className="absolute bottom-4 right-4 w-28 h-20 sm:w-36 sm:h-24 rounded-xl overflow-hidden border-2 border-indigo-500/80 shadow-2xl bg-slate-900 group">
+                  <div className="absolute bottom-4 right-4 z-20 w-28 h-20 sm:w-36 sm:h-24 rounded-xl overflow-hidden border-2 border-indigo-500/80 shadow-2xl bg-slate-900 group">
                     <video
                       ref={localVideoRef}
                       autoPlay
@@ -7028,8 +7605,9 @@ function WorkspaceShellContent() {
                       className={`w-full h-full object-cover ${isVideoMuted ? 'opacity-0' : 'opacity-100'}`}
                     />
                     {isVideoMuted && (
-                      <div className="absolute inset-0 flex items-center justify-center bg-slate-800 text-slate-400 text-[10px] font-semibold">
-                        Camera Off
+                      <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-800 text-slate-400 text-[10px] font-semibold text-center p-1">
+                        <VideoOff className="h-4 w-4 mb-0.5 text-slate-500" />
+                        <span>{!hasLocalCamera ? 'No Camera' : 'Camera Off'}</span>
                       </div>
                     )}
                     <span className="absolute bottom-1 left-1.5 px-1.5 py-0.5 rounded bg-black/60 text-[9px] text-white font-medium">
@@ -7080,37 +7658,123 @@ function WorkspaceShellContent() {
                 {isMicMuted ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
               </button>
 
-              {/* Camera Toggle */}
-              {callType === 'video' && (
-                <button
-                  type="button"
-                  onClick={toggleCamera}
-                  className={`p-3 sm:p-3.5 rounded-2xl transition-all shadow-md ${
-                    isVideoMuted
-                      ? 'bg-rose-500/20 text-rose-400 border border-rose-500/50 hover:bg-rose-500/30'
-                      : 'bg-slate-700/80 hover:bg-slate-600 text-slate-200'
-                  }`}
-                  title={isVideoMuted ? 'Turn Camera On' : 'Turn Camera Off'}
-                >
-                  {isVideoMuted ? <VideoOff className="h-5 w-5" /> : <Video className="h-5 w-5" />}
-                </button>
-              )}
+              {/* Camera Toggle - Always accessible so either participant can turn on video anytime */}
+              <button
+                type="button"
+                onClick={toggleCamera}
+                className={`p-3 sm:p-3.5 rounded-2xl transition-all shadow-md ${
+                  isVideoMuted || !hasLocalCamera
+                    ? 'bg-rose-500/20 text-rose-400 border border-rose-500/50 hover:bg-rose-500/30'
+                    : 'bg-slate-700/80 hover:bg-slate-600 text-slate-200'
+                }`}
+                title={!hasLocalCamera ? 'No camera detected (click to retry/enable camera)' : isVideoMuted ? 'Turn Camera On' : 'Turn Camera Off'}
+              >
+                {isVideoMuted || !hasLocalCamera ? <VideoOff className="h-5 w-5" /> : <Video className="h-5 w-5" />}
+              </button>
 
-              {/* Screen Share */}
-              {callType === 'video' && (
+              {/* Screen Share - Available in any call */}
+              <button
+                type="button"
+                onClick={toggleScreenShare}
+                className={`p-3 sm:p-3.5 rounded-2xl transition-all shadow-md ${
+                  isScreenSharing
+                    ? 'bg-indigo-600 text-white animate-pulse shadow-indigo-600/40'
+                    : 'bg-slate-700/80 hover:bg-slate-600 text-slate-200'
+                }`}
+                title={isScreenSharing ? 'Stop Screen Sharing' : 'Share Screen'}
+              >
+                <MonitorUp className="h-5 w-5" />
+              </button>
+
+              {/* Speaker / Audio Output Switcher (Essential for phone/mobile users) */}
+              <div className="relative">
                 <button
                   type="button"
-                  onClick={toggleScreenShare}
+                  onClick={() => {
+                    loadAudioOutputDevices();
+                    setShowSpeakerMenu((prev) => !prev);
+                  }}
                   className={`p-3 sm:p-3.5 rounded-2xl transition-all shadow-md ${
-                    isScreenSharing
-                      ? 'bg-indigo-600 text-white'
+                    showSpeakerMenu
+                      ? 'bg-indigo-600/30 text-indigo-400 border border-indigo-500/50'
                       : 'bg-slate-700/80 hover:bg-slate-600 text-slate-200'
                   }`}
-                  title={isScreenSharing ? 'Stop Screen Sharing' : 'Share Screen'}
+                  title="Change Speaker / Audio Output"
                 >
-                  <MonitorUp className="h-5 w-5" />
+                  <Volume2 className="h-5 w-5" />
                 </button>
-              )}
+
+                {/* Speaker selection menu popover */}
+                {showSpeakerMenu && (
+                  <div className="absolute bottom-16 left-1/2 -translate-x-1/2 w-64 bg-slate-900/95 border border-slate-700/80 rounded-2xl p-2 shadow-2xl backdrop-blur-md z-50 text-white animate-in fade-in slide-in-from-bottom-2">
+                    <div className="px-3 py-2 border-b border-slate-800 flex items-center justify-between">
+                      <span className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                        <Volume2 className="h-3.5 w-3.5 text-indigo-400" />
+                        Audio Output
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setShowSpeakerMenu(false)}
+                        className="text-slate-400 hover:text-white text-xs p-1"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+
+                    <div className="py-1 flex flex-col gap-1 max-h-48 overflow-y-auto">
+                      {audioOutputDevices.length > 0 ? (
+                        audioOutputDevices.map((dev, idx) => (
+                          <button
+                            key={dev.deviceId || idx}
+                            type="button"
+                            onClick={() => switchAudioOutput(dev.deviceId, dev.label || `Speaker ${idx + 1}`)}
+                            className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-left text-xs transition-colors ${
+                              selectedAudioOutput === dev.deviceId
+                                ? 'bg-indigo-600/30 text-indigo-300 font-semibold'
+                                : 'text-slate-300 hover:bg-slate-800'
+                            }`}
+                          >
+                            <span className="truncate pr-2">
+                              {dev.label || (idx === 0 ? 'Default Device' : `Speaker ${idx + 1}`)}
+                            </span>
+                            {selectedAudioOutput === dev.deviceId && (
+                              <Check className="h-3.5 w-3.5 text-indigo-400 shrink-0" />
+                            )}
+                          </button>
+                        ))
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => switchAudioOutput('default', 'Loudspeaker / Default')}
+                            className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-left text-xs bg-indigo-600/30 text-indigo-300 font-semibold"
+                          >
+                            <span>Loudspeaker / Default</span>
+                            <Check className="h-3.5 w-3.5 text-indigo-400" />
+                          </button>
+                          <p className="px-3 py-1.5 text-[10px] text-slate-400 leading-tight">
+                            On mobile devices, you can also switch audio via your phone's volume controls or Bluetooth / AirPlay quick menu.
+                          </p>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Record Call Button (Audio & Video) */}
+              <button
+                type="button"
+                onClick={isRecording ? stopRecording : startRecording}
+                className={`p-3 sm:p-3.5 rounded-2xl transition-all shadow-md ${
+                  isRecording
+                    ? 'bg-rose-600 hover:bg-rose-700 text-white animate-pulse shadow-rose-600/50'
+                    : 'bg-slate-700/80 hover:bg-slate-600 text-slate-200'
+                }`}
+                title={isRecording ? 'Stop Recording' : 'Record Call (Audio & Video)'}
+              >
+                {isRecording ? <Square className="h-5 w-5 fill-current" /> : <Disc className="h-5 w-5 text-rose-400" />}
+              </button>
 
               {/* End Call Button */}
               <button
