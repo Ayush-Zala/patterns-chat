@@ -74,6 +74,10 @@ import {
   Menu,
   Disc,
   Square,
+  Minimize2,
+  Play,
+  Pause,
+  RotateCcw,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { Workspace, WorkspaceMember } from '@/types/auth';
@@ -299,6 +303,20 @@ function WorkspaceShellContent() {
   const recordedChunksRef = useRef<Blob[]>([]);
   const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
   const recordingAudioCtxRef = useRef<AudioContext | null>(null);
+  const [completedRecording, setCompletedRecording] = useState<{
+    blob: Blob;
+    url: string;
+    fileName: string;
+    duration: number;
+    isVideo: boolean;
+    sizeFormatted: string;
+  } | null>(null);
+  const [interruptedCall, setInterruptedCall] = useState<{
+    peerId: string;
+    peerName: string;
+    peerAvatar?: string;
+    isVideo: boolean;
+  } | null>(null);
 
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
@@ -309,6 +327,8 @@ function WorkspaceShellContent() {
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const [screenFitMode, setScreenFitMode] = useState<'contain' | 'cover'>('contain');
   const [showMobileSidebar, setShowMobileSidebar] = useState(false);
 
   // Unread Message Badges State for Channels & Direct Messages
@@ -788,6 +808,80 @@ function WorkspaceShellContent() {
     callStatusRef.current = callStatus;
   }, [callStatus]);
 
+  // Detect if a call was interrupted by a page reload
+  useEffect(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        const raw = sessionStorage.getItem('teamflow_interrupted_call');
+        if (raw) {
+          sessionStorage.removeItem('teamflow_interrupted_call');
+          const parsed = JSON.parse(raw);
+          if (Date.now() - (parsed.timestamp || 0) < 60000 && parsed.peerId && parsed.peerName) {
+            setInterruptedCall({
+              peerId: parsed.peerId,
+              peerName: parsed.peerName,
+              peerAvatar: parsed.peerAvatar,
+              isVideo: !!parsed.isVideo,
+            });
+          }
+        }
+      }
+    } catch (e) {}
+  }, []);
+
+  // Prevent accidental page reload during active calls & save session for recovery
+  useEffect(() => {
+    if (callStatus === 'connected' || callStatus === 'calling') {
+      const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+        e.preventDefault();
+        e.returnValue = 'You are currently in an active call. Reloading or leaving will disconnect the call.';
+        return e.returnValue;
+      };
+
+      const handlePageHide = () => {
+        if (callPeerRef.current?.id) {
+          try {
+            getSocket().emit('end_call', { toUserId: callPeerRef.current.id });
+          } catch (e) {}
+        }
+      };
+
+      window.addEventListener('beforeunload', handleBeforeUnload);
+      window.addEventListener('pagehide', handlePageHide);
+
+      if (callPeer && callStatus === 'connected') {
+        try {
+          sessionStorage.setItem(
+            'teamflow_interrupted_call',
+            JSON.stringify({
+              peerId: callPeer.id,
+              peerName: callPeer.name,
+              peerAvatar: callPeer.avatarUrl,
+              isVideo: callType === 'video',
+              timestamp: Date.now(),
+            }),
+          );
+        } catch (e) {}
+      }
+
+      return () => {
+        window.removeEventListener('beforeunload', handleBeforeUnload);
+        window.removeEventListener('pagehide', handlePageHide);
+      };
+    } else if (callStatus === 'idle') {
+      try {
+        sessionStorage.removeItem('teamflow_interrupted_call');
+      } catch (e) {}
+    }
+  }, [callStatus, callPeer, callType]);
+
+  function handleResumeInterruptedCall() {
+    if (!interruptedCall) return;
+    const { peerId, peerName, peerAvatar, isVideo } = interruptedCall;
+    setInterruptedCall(null);
+    handleStartCall({ id: peerId, name: peerName, avatarUrl: peerAvatar }, isVideo);
+  }
+
   // STUN Configuration for WebRTC P2P
   const RTC_CONFIG: RTCConfiguration = {
     iceServers: [
@@ -1023,6 +1117,10 @@ function WorkspaceShellContent() {
       remoteStreamRef.current.getTracks().forEach((track) => track.stop());
       remoteStreamRef.current = null;
     }
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((track) => track.stop());
+      screenStreamRef.current = null;
+    }
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close();
       peerConnectionRef.current = null;
@@ -1121,26 +1219,41 @@ function WorkspaceShellContent() {
       };
 
       pc.ontrack = (event) => {
-        console.log('Received remote media track:', event.track.kind);
-        if (event.track.kind === 'video') {
-          setHasRemoteVideo(true);
-          setCallType('video');
-          event.track.onunmute = () => setHasRemoteVideo(true);
-          event.track.onended = () => setHasRemoteVideo(false);
-        }
+        console.log('Received remote media track:', event.track.kind, event.track.id);
 
-        // Support both event.streams and direct track attachment
         if (!remoteStreamRef.current) {
           remoteStreamRef.current = new MediaStream();
         }
-        if (event.streams && event.streams[0]) {
-          event.streams[0].getTracks().forEach((t) => {
-            if (!remoteStreamRef.current!.getTracks().some((existing) => existing.id === t.id)) {
-              remoteStreamRef.current!.addTrack(t);
+
+        if (event.track.kind === 'video') {
+          // Fix for Screen Share: Replace existing video tracks so the new incoming screen/camera track is index 0
+          const currentVideos = remoteStreamRef.current.getVideoTracks();
+          currentVideos.forEach((vt) => {
+            if (vt.id !== event.track.id) {
+              remoteStreamRef.current!.removeTrack(vt);
             }
           });
-        } else if (event.track) {
-          if (!remoteStreamRef.current.getTracks().some((existing) => existing.id === event.track.id)) {
+          if (!remoteStreamRef.current.getVideoTracks().some((vt) => vt.id === event.track.id)) {
+            remoteStreamRef.current.addTrack(event.track);
+          }
+
+          setHasRemoteVideo(true);
+          setCallType('video');
+
+          event.track.onunmute = () => {
+            setHasRemoteVideo(true);
+            if (remoteVideoRef.current && remoteStreamRef.current) {
+              remoteVideoRef.current.srcObject = remoteStreamRef.current;
+              remoteVideoRef.current.play().catch(() => {});
+            }
+          };
+          event.track.onended = () => {
+            if (remoteStreamRef.current?.getVideoTracks().length === 0) {
+              setHasRemoteVideo(false);
+            }
+          };
+        } else if (event.track.kind === 'audio') {
+          if (!remoteStreamRef.current.getAudioTracks().some((at) => at.id === event.track.id)) {
             remoteStreamRef.current.addTrack(event.track);
           }
         }
@@ -1241,26 +1354,41 @@ function WorkspaceShellContent() {
       };
 
       pc.ontrack = (event) => {
-        console.log('Received remote media track on accept:', event.track.kind);
-        if (event.track.kind === 'video') {
-          setHasRemoteVideo(true);
-          setCallType('video');
-          event.track.onunmute = () => setHasRemoteVideo(true);
-          event.track.onended = () => setHasRemoteVideo(false);
-        }
+        console.log('Received remote media track on accept:', event.track.kind, event.track.id);
 
-        // Support both event.streams and direct track attachment
         if (!remoteStreamRef.current) {
           remoteStreamRef.current = new MediaStream();
         }
-        if (event.streams && event.streams[0]) {
-          event.streams[0].getTracks().forEach((t) => {
-            if (!remoteStreamRef.current!.getTracks().some((existing) => existing.id === t.id)) {
-              remoteStreamRef.current!.addTrack(t);
+
+        if (event.track.kind === 'video') {
+          // Fix for Screen Share: Replace existing video tracks so the new incoming screen/camera track is index 0
+          const currentVideos = remoteStreamRef.current.getVideoTracks();
+          currentVideos.forEach((vt) => {
+            if (vt.id !== event.track.id) {
+              remoteStreamRef.current!.removeTrack(vt);
             }
           });
-        } else if (event.track) {
-          if (!remoteStreamRef.current.getTracks().some((existing) => existing.id === event.track.id)) {
+          if (!remoteStreamRef.current.getVideoTracks().some((vt) => vt.id === event.track.id)) {
+            remoteStreamRef.current.addTrack(event.track);
+          }
+
+          setHasRemoteVideo(true);
+          setCallType('video');
+
+          event.track.onunmute = () => {
+            setHasRemoteVideo(true);
+            if (remoteVideoRef.current && remoteStreamRef.current) {
+              remoteVideoRef.current.srcObject = remoteStreamRef.current;
+              remoteVideoRef.current.play().catch(() => {});
+            }
+          };
+          event.track.onended = () => {
+            if (remoteStreamRef.current?.getVideoTracks().length === 0) {
+              setHasRemoteVideo(false);
+            }
+          };
+        } else if (event.track.kind === 'audio') {
+          if (!remoteStreamRef.current.getAudioTracks().some((at) => at.id === event.track.id)) {
             remoteStreamRef.current.addTrack(event.track);
           }
         }
@@ -1402,9 +1530,10 @@ function WorkspaceShellContent() {
         recordStream.addTrack(mixedAudioTrack);
       }
 
-      // For video calls, attach live video track (remote video, or local camera / screen share)
+      // For video calls, attach live video track (remote video, screen share, or local camera)
       const activeVideoTrack =
         remoteStreamRef.current?.getVideoTracks().find((t) => t.readyState === 'live') ||
+        screenStreamRef.current?.getVideoTracks().find((t) => t.readyState === 'live') ||
         localStreamRef.current?.getVideoTracks().find((t) => t.readyState === 'live');
 
       const isVideoRecording = callType === 'video' && !!activeVideoTrack;
@@ -1445,21 +1574,38 @@ function WorkspaceShellContent() {
         const blob = new Blob(recordedChunksRef.current, { type: blobType });
         if (blob.size > 0) {
           const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.style.display = 'none';
-          a.href = url;
           const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
           const ext = hasVideo ? 'webm' : 'webm';
-          a.download = `${hasVideo ? 'video' : 'call'}-recording-${callPeerRef.current?.name || 'teamflow'}-${timestamp}.${ext}`;
-          document.body.appendChild(a);
-          a.click();
-          setTimeout(() => {
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-          }, 2000);
+          const fileName = `${hasVideo ? 'video' : 'call'}-recording-${callPeerRef.current?.name?.replace(/\s+/g, '_') || 'teamflow'}-${timestamp}.${ext}`;
+          const duration = recordingDuration;
+          const sizeFormatted = formatFileSize(blob.size);
 
-          setCallNotificationMsg('Call recording downloaded!');
-          setTimeout(() => setCallNotificationMsg(null), 5000);
+          setCompletedRecording({
+            blob,
+            url,
+            fileName,
+            duration,
+            isVideo: hasVideo,
+            sizeFormatted,
+          });
+
+          // Attempt browser download
+          try {
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = url;
+            a.download = fileName;
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => {
+              if (document.body.contains(a)) document.body.removeChild(a);
+            }, 2000);
+          } catch (e) {
+            console.warn('Auto download blocked/failed:', e);
+          }
+
+          setCallNotificationMsg('Recording saved! Preview, download, and share options are ready.');
+          setTimeout(() => setCallNotificationMsg(null), 6000);
         }
         if (recordingAudioCtxRef.current) {
           try {
@@ -1516,6 +1662,49 @@ function WorkspaceShellContent() {
         isRecording: false,
       });
     }
+  }
+
+  function downloadRecordingManually() {
+    if (!completedRecording) return;
+    const a = document.createElement('a');
+    a.href = completedRecording.url;
+    a.download = completedRecording.fileName;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      if (document.body.contains(a)) document.body.removeChild(a);
+    }, 1000);
+    setCallNotificationMsg('Recording downloaded to your Downloads folder!');
+    setTimeout(() => setCallNotificationMsg(null), 4000);
+  }
+
+  async function shareRecordingToChat() {
+    if (!completedRecording || !token) return;
+    try {
+      const file = new (window as any).File([completedRecording.blob], completedRecording.fileName, {
+        type: completedRecording.blob.type,
+      });
+      const uploaded = await uploadFile(file);
+      if (uploaded) {
+        if (activeConversation) {
+          setPendingDMAttachments((prev) => [...prev, uploaded]);
+        } else {
+          setPendingAttachments((prev) => [...prev, uploaded]);
+        }
+        setCallNotificationMsg('Recording attached to your message! Ready to send.');
+        setTimeout(() => setCallNotificationMsg(null), 5000);
+      }
+    } catch (e) {
+      console.error('Failed to share recording to chat:', e);
+      alert('Could not attach recording to chat.');
+    }
+  }
+
+  function closeRecordingModal() {
+    if (completedRecording?.url) {
+      URL.revokeObjectURL(completedRecording.url);
+    }
+    setCompletedRecording(null);
   }
 
   function toggleMic() {
@@ -1618,32 +1807,41 @@ function WorkspaceShellContent() {
           alert('Screen sharing is not supported in this browser.');
           return;
         }
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
         const screenTrack = screenStream.getVideoTracks()[0];
         if (!screenTrack) return;
 
-        // Automatically upgrade layout to video mode so the screen is visible
+        screenStreamRef.current = screenStream;
         setCallType('video');
 
+        const videoSender = pc.getSenders().find((s) => s.track?.kind === 'video' || s.track === null);
         const videoTransceiver = pc.getTransceivers().find((t) => t.receiver.track.kind === 'video');
+
         if (videoTransceiver && videoTransceiver.sender) {
           videoTransceiver.direction = 'sendrecv';
           await videoTransceiver.sender.replaceTrack(screenTrack);
+        } else if (videoSender) {
+          await videoSender.replaceTrack(screenTrack);
         } else {
-          const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
-          if (sender) {
-            await sender.replaceTrack(screenTrack);
-          } else {
-            pc.addTrack(screenTrack, screenStream);
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            if (callPeerRef.current?.id) {
-              getSocket().emit('renegotiate_call', {
-                toUserId: callPeerRef.current.id,
-                signalData: offer,
-              });
-            }
+          pc.addTrack(screenTrack, screenStream);
+        }
+
+        // Always perform SDP renegotiation so remote peer definitely receives the new track
+        try {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          if (callPeerRef.current?.id) {
+            getSocket().emit('renegotiate_call', {
+              toUserId: callPeerRef.current.id,
+              signalData: offer,
+            });
+            getSocket().emit('toggle_video', {
+              toUserId: callPeerRef.current.id,
+              videoEnabled: true,
+            });
           }
+        } catch (negErr) {
+          console.warn('Renegotiation offer error during screen share:', negErr);
         }
 
         if (localVideoRef.current) {
@@ -1651,78 +1849,15 @@ function WorkspaceShellContent() {
           localVideoRef.current.play().catch(() => {});
         }
 
-        if (callPeerRef.current?.id) {
-          getSocket().emit('toggle_video', {
-            toUserId: callPeerRef.current.id,
-            videoEnabled: true,
-          });
-        }
-
         setCallNotificationMsg('You started sharing your screen');
         setTimeout(() => setCallNotificationMsg(null), 3000);
-
-        screenTrack.onended = async () => {
-          setIsScreenSharing(false);
-          const originalVideoTrack = localStreamRef.current?.getVideoTracks()[0];
-          if (videoTransceiver && videoTransceiver.sender) {
-            if (originalVideoTrack && originalVideoTrack.enabled) {
-              videoTransceiver.direction = 'sendrecv';
-              await videoTransceiver.sender.replaceTrack(originalVideoTrack);
-            } else {
-              videoTransceiver.direction = 'recvonly';
-              await videoTransceiver.sender.replaceTrack(null);
-              if (callPeerRef.current?.id) {
-                getSocket().emit('toggle_video', {
-                  toUserId: callPeerRef.current.id,
-                  videoEnabled: false,
-                });
-              }
-            }
-          } else {
-            const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
-            if (sender) {
-              await sender.replaceTrack(originalVideoTrack || null);
-            }
-          }
-
-          if (localVideoRef.current) {
-            localVideoRef.current.srcObject = localStreamRef.current;
-          }
-        };
-
         setIsScreenSharing(true);
+
+        screenTrack.onended = () => {
+          stopScreenSharing();
+        };
       } else {
-        // Stop screen sharing manually
-        const originalVideoTrack = localStreamRef.current?.getVideoTracks()[0];
-        const videoTransceiver = pc.getTransceivers().find((t) => t.receiver.track.kind === 'video');
-        if (videoTransceiver && videoTransceiver.sender) {
-          if (originalVideoTrack && originalVideoTrack.enabled) {
-            videoTransceiver.direction = 'sendrecv';
-            await videoTransceiver.sender.replaceTrack(originalVideoTrack);
-          } else {
-            videoTransceiver.direction = 'recvonly';
-            await videoTransceiver.sender.replaceTrack(null);
-            if (callPeerRef.current?.id) {
-              getSocket().emit('toggle_video', {
-                toUserId: callPeerRef.current.id,
-                videoEnabled: false,
-              });
-            }
-          }
-        } else {
-          const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
-          if (sender) {
-            await sender.replaceTrack(originalVideoTrack || null);
-          }
-        }
-
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = localStreamRef.current;
-        }
-
-        setIsScreenSharing(false);
-        setCallNotificationMsg('Screen sharing stopped');
-        setTimeout(() => setCallNotificationMsg(null), 3000);
+        await stopScreenSharing();
       }
     } catch (err: any) {
       if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
@@ -1730,6 +1865,58 @@ function WorkspaceShellContent() {
       }
       setIsScreenSharing(false);
     }
+  }
+
+  async function stopScreenSharing() {
+    if (!peerConnectionRef.current) return;
+    const pc = peerConnectionRef.current;
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((t) => t.stop());
+      screenStreamRef.current = null;
+    }
+
+    const originalVideoTrack = localStreamRef.current?.getVideoTracks().find((t) => t.readyState === 'live');
+    const videoTransceiver = pc.getTransceivers().find((t) => t.receiver.track.kind === 'video');
+    const videoSender = pc.getSenders().find((s) => s.track?.kind === 'video');
+
+    if (videoTransceiver && videoTransceiver.sender) {
+      if (originalVideoTrack && !isVideoMuted) {
+        videoTransceiver.direction = 'sendrecv';
+        await videoTransceiver.sender.replaceTrack(originalVideoTrack);
+      } else {
+        videoTransceiver.direction = 'recvonly';
+        await videoTransceiver.sender.replaceTrack(null);
+      }
+    } else if (videoSender) {
+      await videoSender.replaceTrack(originalVideoTrack && !isVideoMuted ? originalVideoTrack : null);
+    }
+
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = localStreamRef.current;
+      localVideoRef.current.play().catch(() => {});
+    }
+
+    // Always renegotiate when stopping screen sharing as well
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      if (callPeerRef.current?.id) {
+        getSocket().emit('renegotiate_call', {
+          toUserId: callPeerRef.current.id,
+          signalData: offer,
+        });
+        getSocket().emit('toggle_video', {
+          toUserId: callPeerRef.current.id,
+          videoEnabled: !!(originalVideoTrack && !isVideoMuted),
+        });
+      }
+    } catch (e) {
+      console.warn('Renegotiation on stop screen sharing error:', e);
+    }
+
+    setIsScreenSharing(false);
+    setCallNotificationMsg('Screen sharing stopped');
+    setTimeout(() => setCallNotificationMsg(null), 3000);
   }
 
   function formatCallDuration(seconds: number): string {
@@ -1859,6 +2046,12 @@ function WorkspaceShellContent() {
           });
         }
         setCallType('video');
+        setHasRemoteVideo(true);
+
+        if (remoteVideoRef.current && remoteStreamRef.current) {
+          remoteVideoRef.current.srcObject = remoteStreamRef.current;
+          remoteVideoRef.current.play().catch(() => {});
+        }
       } catch (e) {
         console.warn('Call renegotiation failed:', e);
       }
@@ -1867,7 +2060,16 @@ function WorkspaceShellContent() {
     async function handleCallRenegotiated(data: { signalData: any }) {
       if (!peerConnectionRef.current) return;
       try {
-        await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data.signalData));
+        const pc = peerConnectionRef.current;
+        await pc.setRemoteDescription(new RTCSessionDescription(data.signalData));
+        for (const cand of pendingCandidatesRef.current) {
+          await pc.addIceCandidate(new RTCIceCandidate(cand)).catch(console.error);
+        }
+        pendingCandidatesRef.current = [];
+        if (remoteVideoRef.current && remoteStreamRef.current) {
+          remoteVideoRef.current.srcObject = remoteStreamRef.current;
+          remoteVideoRef.current.play().catch(() => {});
+        }
       } catch (e) {
         console.warn('Setting remote description on renegotiated failed:', e);
       }
@@ -7515,6 +7717,14 @@ function WorkspaceShellContent() {
               </div>
 
               <div className="flex items-center gap-2">
+                {/* Active Screen Sharing Badge */}
+                {isScreenSharing && (
+                  <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-500/20 border border-indigo-500/60 text-indigo-300 flex items-center gap-1.5 animate-pulse shadow-sm shadow-indigo-500/20">
+                    <MonitorUp className="h-3 w-3" />
+                    <span>Sharing Screen</span>
+                  </span>
+                )}
+
                 {/* Active Recording Indicator Badge */}
                 {isRecording && (
                   <span className="px-2.5 py-1 rounded-full text-xs font-mono font-bold bg-rose-500/20 border border-rose-500/60 text-rose-400 flex items-center gap-1.5 animate-pulse shadow-sm shadow-rose-500/30">
@@ -7557,8 +7767,21 @@ function WorkspaceShellContent() {
                     muted
                     onPlaying={() => setHasRemoteVideo(true)}
                     onLoadedData={() => setHasRemoteVideo(true)}
-                    className="w-full h-full min-h-[300px] sm:h-[380px] md:h-[440px] object-cover bg-slate-950"
+                    className={`w-full h-full min-h-[300px] sm:h-[380px] md:h-[440px] bg-slate-950 transition-all ${
+                      isScreenSharing || screenFitMode === 'contain' ? 'object-contain' : 'object-cover'
+                    }`}
                   />
+
+                  {/* Fit / Fill toggle button */}
+                  <button
+                    type="button"
+                    onClick={() => setScreenFitMode((prev) => (prev === 'contain' ? 'cover' : 'contain'))}
+                    className="absolute top-3 right-3 z-30 px-2.5 py-1.5 rounded-xl bg-black/60 hover:bg-black/80 text-white text-[11px] font-medium flex items-center gap-1.5 border border-slate-700/80 backdrop-blur-xs transition-colors shadow-md"
+                    title={screenFitMode === 'contain' ? 'Fill screen' : 'Fit entire screen without cropping'}
+                  >
+                    {screenFitMode === 'contain' ? <Maximize2 className="h-3 w-3" /> : <Minimize2 className="h-3 w-3" />}
+                    <span>{screenFitMode === 'contain' ? 'Fit Screen' : 'Fill'}</span>
+                  </button>
 
                   {/* Ringing placeholder while waiting for answer */}
                   {callStatus === 'calling' && (
@@ -7784,6 +8007,156 @@ function WorkspaceShellContent() {
               >
                 <PhoneOff className="h-5 w-5" />
                 <span>End Call</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─────────────────────────────────────────────────────────────
+          CALL INTERRUPTED RECOVERY BANNER
+      ───────────────────────────────────────────────────────────── */}
+      {interruptedCall && (
+        <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 max-w-md w-[92%] sm:w-auto bg-slate-900 border border-indigo-500/60 shadow-2xl rounded-2xl p-3 sm:p-3.5 flex items-center gap-3 text-white animate-in slide-in-from-top duration-300 backdrop-blur-md">
+          <div className="relative shrink-0">
+            <img
+              src={interruptedCall.peerAvatar || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
+              alt={interruptedCall.peerName}
+              className="h-10 w-10 rounded-full border border-indigo-400 object-cover"
+            />
+            <span className="absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 rounded-full bg-amber-500 border-2 border-slate-900 flex items-center justify-center">
+              <AlertCircle className="h-2 w-2 text-white" />
+            </span>
+          </div>
+          <div className="flex-1 min-w-0 pr-1">
+            <p className="text-xs font-bold text-white truncate">
+              Call Interrupted by Reload
+            </p>
+            <p className="text-[11px] text-slate-300 truncate">
+              Call with <span className="font-semibold text-indigo-300">{interruptedCall.peerName}</span> ended unexpectedly.
+            </p>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={handleResumeInterruptedCall}
+              className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs shadow-md flex items-center gap-1.5 transition-all active:scale-95"
+            >
+              <PhoneCall className="h-3.5 w-3.5" />
+              <span>Re-call</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setInterruptedCall(null)}
+              className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+              title="Dismiss"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ─────────────────────────────────────────────────────────────
+          CALL RECORDING READY MODAL
+      ───────────────────────────────────────────────────────────── */}
+      {completedRecording && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="bg-slate-900 border border-slate-700/80 rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl text-white flex flex-col gap-4 animate-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-2xl bg-indigo-600/20 text-indigo-400 border border-indigo-500/40">
+                  <Disc className="h-6 w-6 text-indigo-400 animate-pulse" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Call Recording Ready</h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    {completedRecording.isVideo ? 'Video & Audio Call Recording' : 'Voice Call Audio Recording'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={closeRecordingModal}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                title="Close"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Embedded Live Player Preview */}
+            <div className="rounded-2xl overflow-hidden bg-slate-950 border border-slate-800 flex items-center justify-center max-h-64">
+              {completedRecording.isVideo ? (
+                <video
+                  src={completedRecording.url}
+                  controls
+                  playsInline
+                  className="w-full max-h-64 object-contain bg-black"
+                />
+              ) : (
+                <div className="py-8 px-4 w-full flex flex-col items-center justify-center gap-3">
+                  <div className="p-4 rounded-full bg-indigo-600/20 border border-indigo-500/30">
+                    <Volume2 className="h-8 w-8 text-indigo-400" />
+                  </div>
+                  <audio src={completedRecording.url} controls className="w-full max-w-md mt-2" />
+                </div>
+              )}
+            </div>
+
+            {/* Recording Metadata */}
+            <div className="grid grid-cols-2 gap-2 text-xs bg-slate-800/60 p-3 rounded-2xl border border-slate-700/50">
+              <div>
+                <span className="text-slate-400 block text-[10px] uppercase font-semibold">File Name</span>
+                <span className="font-mono text-slate-200 truncate block mt-0.5" title={completedRecording.fileName}>
+                  {completedRecording.fileName}
+                </span>
+              </div>
+              <div>
+                <span className="text-slate-400 block text-[10px] uppercase font-semibold">Size & Length</span>
+                <span className="text-slate-200 block mt-0.5">
+                  {completedRecording.sizeFormatted} • {formatCallDuration(completedRecording.duration)}
+                </span>
+              </div>
+            </div>
+
+            <div className="text-[11px] text-slate-400 flex items-center gap-1.5 px-1">
+              <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+              <span>
+                File saved to your browser's default <b>Downloads</b> folder.
+              </span>
+            </div>
+
+            {/* Actions */}
+            <div className="flex flex-col sm:flex-row gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={downloadRecordingManually}
+                className="flex-1 py-2.5 px-4 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 transition-all active:scale-98"
+              >
+                <Download className="h-4 w-4" />
+                <span>Download Again</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={async () => {
+                  await shareRecordingToChat();
+                  closeRecordingModal();
+                }}
+                className="flex-1 py-2.5 px-4 rounded-2xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white font-bold text-xs flex items-center justify-center gap-2 transition-all active:scale-98"
+              >
+                <Share2 className="h-4 w-4 text-indigo-400" />
+                <span>Share in Chat</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={closeRecordingModal}
+                className="py-2.5 px-4 rounded-2xl bg-slate-800/50 hover:bg-slate-800 text-slate-300 font-semibold text-xs transition-colors text-center"
+              >
+                Done
               </button>
             </div>
           </div>
