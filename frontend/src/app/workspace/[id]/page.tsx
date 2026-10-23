@@ -395,7 +395,9 @@ function WorkspaceShellContent() {
   const [showRecordingsModal, setShowRecordingsModal] = useState(false);
   const [activePlaybackRecording, setActivePlaybackRecording] = useState<SavedRecording | null>(null);
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
-  const [screenFitMode, setScreenFitMode] = useState<'cover' | 'contain'>('cover');
+  const [screenFitMode, setScreenFitMode] = useState<'cover' | 'contain'>('contain');
+  const [isPeerScreenSharing, setIsPeerScreenSharing] = useState(false);
+  const [isLocalPipMinimized, setIsLocalPipMinimized] = useState(false);
   const wakeLockRef = useRef<any>(null);
 
   async function loadWorkspaceRecordings() {
@@ -1400,6 +1402,9 @@ function WorkspaceShellContent() {
     }
     setIsRecording(false);
     setIsPeerRecording(false);
+    setIsPeerScreenSharing(false);
+    setIsLocalPipMinimized(false);
+    setScreenFitMode('contain');
     setRecordingDuration(0);
   }
 
@@ -2146,6 +2151,10 @@ function WorkspaceShellContent() {
               toUserId: callPeerRef.current.id,
               videoEnabled: true,
             });
+            getSocket().emit('toggle_screen_share', {
+              toUserId: callPeerRef.current.id,
+              isScreenSharing: true,
+            });
           }
         } catch (negErr) {
           console.warn('Renegotiation offer error during screen share:', negErr);
@@ -2159,6 +2168,7 @@ function WorkspaceShellContent() {
         setCallNotificationMsg('You started sharing your screen');
         setTimeout(() => setCallNotificationMsg(null), 3000);
         setIsScreenSharing(true);
+        setScreenFitMode('contain');
 
         screenTrack.onended = () => {
           stopScreenSharing();
@@ -2215,6 +2225,10 @@ function WorkspaceShellContent() {
         getSocket().emit('toggle_video', {
           toUserId: callPeerRef.current.id,
           videoEnabled: !!(originalVideoTrack && !isVideoMuted),
+        });
+        getSocket().emit('toggle_screen_share', {
+          toUserId: callPeerRef.current.id,
+          isScreenSharing: false,
         });
       }
     } catch (e) {
@@ -2477,6 +2491,18 @@ function WorkspaceShellContent() {
       }
     }
 
+    function handlePeerScreenToggled(data: { isScreenSharing: boolean }) {
+      setIsPeerScreenSharing(data.isScreenSharing);
+      if (data.isScreenSharing) {
+        setScreenFitMode('contain');
+        setCallNotificationMsg(`${callPeerRef.current?.name || 'Teammate'} is sharing screen`);
+        setTimeout(() => setCallNotificationMsg(null), 4000);
+      } else {
+        setCallNotificationMsg(`${callPeerRef.current?.name || 'Teammate'} stopped sharing screen`);
+        setTimeout(() => setCallNotificationMsg(null), 3000);
+      }
+    }
+
     socket.on('incoming_call', handleIncomingCall);
     socket.on('call_accepted', handleCallAccepted);
     socket.on('ice_candidate', handleIceCandidate);
@@ -2486,6 +2512,7 @@ function WorkspaceShellContent() {
     socket.on('call_renegotiate', handleCallRenegotiate);
     socket.on('call_renegotiated', handleCallRenegotiated);
     socket.on('peer_recording_state', handlePeerRecordingState);
+    socket.on('peer_screen_toggled', handlePeerScreenToggled);
 
     return () => {
       socket.emit('leave_user', { userId: user.id });
@@ -2498,6 +2525,7 @@ function WorkspaceShellContent() {
       socket.off('call_renegotiate', handleCallRenegotiate);
       socket.off('call_renegotiated', handleCallRenegotiated);
       socket.off('peer_recording_state', handlePeerRecordingState);
+      socket.off('peer_screen_toggled', handlePeerScreenToggled);
     };
   }, [user?.id]);
 
@@ -8669,10 +8697,12 @@ function WorkspaceShellContent() {
 
             <div className="flex items-center gap-2">
               {/* Active Screen Sharing Badge */}
-              {isScreenSharing && (
+              {(isScreenSharing || isPeerScreenSharing) && (
                 <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-500/20 border border-indigo-500/60 text-indigo-300 flex items-center gap-1.5 animate-pulse shadow-sm shadow-indigo-500/20">
                   <MonitorUp className="h-3 w-3" />
-                  <span className="hidden sm:inline">Sharing Screen</span>
+                  <span className="hidden sm:inline">
+                    {isScreenSharing ? 'You are Sharing Screen' : `${callPeer?.name || 'Teammate'} is Sharing Screen`}
+                  </span>
                 </span>
               )}
 
@@ -8733,7 +8763,7 @@ function WorkspaceShellContent() {
           <div className="relative bg-slate-950 flex-1 w-full h-full flex items-center justify-center overflow-hidden">
             {callType === 'video' ? (
               <>
-                {/* Remote video stream */}
+                {/* Remote video stream - always object-contain for screen sharing so 100% of screen is visible */}
                 <video
                   ref={remoteVideoRef}
                   autoPlay
@@ -8742,7 +8772,7 @@ function WorkspaceShellContent() {
                   onPlaying={() => setHasRemoteVideo(true)}
                   onLoadedData={() => setHasRemoteVideo(true)}
                   className={`w-full h-full bg-slate-950 transition-all ${
-                    isScreenSharing || screenFitMode === 'contain' ? 'object-contain' : 'object-cover'
+                    isScreenSharing || isPeerScreenSharing || screenFitMode === 'contain' ? 'object-contain' : 'object-cover'
                   }`}
                 />
 
@@ -8805,11 +8835,15 @@ function WorkspaceShellContent() {
                   <button
                     type="button"
                     onClick={() => setScreenFitMode((prev) => (prev === 'contain' ? 'cover' : 'contain'))}
-                    className="px-2.5 py-1.5 rounded-xl bg-black/60 hover:bg-black/80 text-white text-[11px] font-medium flex items-center gap-1.5 border border-slate-700/80 backdrop-blur-xs transition-colors shadow-md"
-                    title={screenFitMode === 'contain' ? 'Fill screen' : 'Fit entire screen without cropping'}
+                    className={`px-2.5 py-1.5 rounded-xl text-white text-[11px] font-medium flex items-center gap-1.5 border backdrop-blur-xs transition-colors shadow-md ${
+                      screenFitMode === 'contain'
+                        ? 'bg-indigo-600/70 border-indigo-500/80 hover:bg-indigo-600/90 text-white'
+                        : 'bg-black/60 hover:bg-black/80 border-slate-700/80 text-slate-300'
+                    }`}
+                    title={screenFitMode === 'contain' ? 'Currently: Fit (100% Entire Screen) - Click to zoom/fill' : 'Currently: Fill (Zoomed/Cropped) - Click to fit entire screen'}
                   >
                     {screenFitMode === 'contain' ? <Maximize2 className="h-3 w-3" /> : <Minimize2 className="h-3 w-3" />}
-                    <span>{screenFitMode === 'contain' ? 'Fit Screen' : 'Fill'}</span>
+                    <span>{screenFitMode === 'contain' ? 'Fit (100% Screen)' : 'Fill (Zoomed)'}</span>
                   </button>
                 </div>
 
@@ -8848,24 +8882,53 @@ function WorkspaceShellContent() {
                   </div>
                 )}
 
-                {/* Local video PiP (bottom right) */}
-                <div className="absolute bottom-6 right-6 z-20 w-32 h-24 sm:w-48 sm:h-36 rounded-2xl overflow-hidden border-2 border-indigo-500/80 shadow-2xl bg-slate-900 group">
-                  <video
-                    ref={localVideoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className={`w-full h-full object-cover ${isVideoMuted ? 'opacity-0' : 'opacity-100'}`}
-                  />
-                  {isVideoMuted && (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-800 text-slate-400 text-xs font-semibold text-center p-2">
-                      <VideoOff className="h-5 w-5 mb-1 text-slate-500" />
-                      <span>{!hasLocalCamera ? 'No Camera' : 'Camera Off'}</span>
-                    </div>
+                {/* Local video PiP (bottom right) with minimize toggle to unblock shared screen */}
+                <div
+                  className={`absolute bottom-6 right-6 z-20 rounded-2xl overflow-hidden border-2 border-indigo-500/80 shadow-2xl bg-slate-900 group transition-all duration-200 ${
+                    isLocalPipMinimized
+                      ? 'w-10 h-10 flex items-center justify-center p-0 bg-slate-900/90 border-slate-700 hover:border-indigo-400'
+                      : 'w-32 h-24 sm:w-48 sm:h-36'
+                  }`}
+                >
+                  {isLocalPipMinimized ? (
+                    <button
+                      type="button"
+                      onClick={() => setIsLocalPipMinimized(false)}
+                      className="w-full h-full flex flex-col items-center justify-center text-indigo-400 hover:text-white"
+                      title="Restore local camera preview"
+                    >
+                      <Maximize2 className="h-4 w-4" />
+                    </button>
+                  ) : (
+                    <>
+                      <video
+                        ref={localVideoRef}
+                        autoPlay
+                        playsInline
+                        muted
+                        className={`w-full h-full object-cover ${isVideoMuted ? 'opacity-0' : 'opacity-100'}`}
+                      />
+                      {isVideoMuted && (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-800 text-slate-400 text-xs font-semibold text-center p-2">
+                          <VideoOff className="h-5 w-5 mb-1 text-slate-500" />
+                          <span>{!hasLocalCamera ? 'No Camera' : 'Camera Off'}</span>
+                        </div>
+                      )}
+                      <div className="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity z-10 flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setIsLocalPipMinimized(true)}
+                          className="p-1 rounded-lg bg-black/70 hover:bg-black text-white text-[10px]"
+                          title="Minimize preview (unblock shared screen)"
+                        >
+                          <Minimize2 className="h-3 w-3" />
+                        </button>
+                      </div>
+                      <span className="absolute bottom-1.5 left-2 px-2 py-0.5 rounded bg-black/60 text-[10px] text-white font-medium">
+                        You
+                      </span>
+                    </>
                   )}
-                  <span className="absolute bottom-1.5 left-2 px-2 py-0.5 rounded bg-black/60 text-[10px] text-white font-medium">
-                    You
-                  </span>
                 </div>
               </>
             ) : (

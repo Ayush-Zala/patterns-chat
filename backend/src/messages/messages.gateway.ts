@@ -380,6 +380,24 @@ export class MessagesGateway implements OnGatewayConnection, OnGatewayDisconnect
     }
   }
 
+  @SubscribeMessage('toggle_screen_share')
+  handleToggleScreenShare(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      toUserId: string;
+      isScreenSharing: boolean;
+    },
+  ) {
+    if (data?.toUserId) {
+      const room = `user:${data.toUserId}`;
+      client.to(room).emit('peer_screen_toggled', {
+        isScreenSharing: data.isScreenSharing,
+      });
+      this.logger.log(`🖥️ Screen share toggled to ${data.isScreenSharing} for user ${data.toUserId}`);
+    }
+  }
+
   @SubscribeMessage('renegotiate_call')
   handleRenegotiateCall(
     @ConnectedSocket() client: Socket,

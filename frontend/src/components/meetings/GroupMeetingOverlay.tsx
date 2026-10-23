@@ -129,7 +129,7 @@ export function GroupMeetingOverlay({
 
   // ── UI State ───────────────────────────────────────────────────
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [screenFitMode, setScreenFitMode] = useState<'cover' | 'contain'>('cover');
+  const [screenFitMode, setScreenFitMode] = useState<'cover' | 'contain'>('contain');
   const [callDuration, setCallDuration] = useState(0);
   const [activePanel, setActivePanel] = useState<'none' | 'participants' | 'chat' | 'invite'>('none');
   const [showMoreMenu, setShowMoreMenu] = useState(false);
