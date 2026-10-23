@@ -26,4 +26,8 @@ export class CreateMeetingDto {
   @IsString({ each: true })
   @IsOptional()
   participantIds?: string[];
+
+  @IsString()
+  @IsOptional()
+  workspaceId?: string;
 }

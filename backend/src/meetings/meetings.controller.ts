@@ -24,12 +24,29 @@ export class MeetingsController {
     return this.meetingsService.findAll(req.user.id, workspaceId);
   }
 
+  @Get('meetings/workspace/:workspaceId')
+  async findAllAlt(@Request() req: any, @Param('workspaceId') workspaceId: string) {
+    return this.meetingsService.findAll(req.user.id, workspaceId);
+  }
+
   @Post('workspaces/:workspaceId/meetings')
   async create(
     @Request() req: any,
     @Param('workspaceId') workspaceId: string,
     @Body() dto: CreateMeetingDto,
   ) {
+    return this.meetingsService.create(req.user.id, workspaceId, dto);
+  }
+
+  @Post('meetings')
+  async createAlt(
+    @Request() req: any,
+    @Body() dto: CreateMeetingDto,
+  ) {
+    const workspaceId = dto.workspaceId;
+    if (!workspaceId) {
+      throw new Error('workspaceId is required in body');
+    }
     return this.meetingsService.create(req.user.id, workspaceId, dto);
   }
 

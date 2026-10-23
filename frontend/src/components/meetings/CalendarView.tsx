@@ -113,9 +113,14 @@ export function CalendarView({
   const fetchMeetings = async () => {
     if (!workspaceId || !token) return;
     try {
-      const res = await fetch(`${API_URL}/meetings/workspace/${workspaceId}`, {
+      let res = await fetch(`${API_URL}/workspaces/${workspaceId}/meetings`, {
         headers: { Authorization: `Bearer ${token}` },
       });
+      if (!res.ok) {
+        res = await fetch(`${API_URL}/meetings/workspace/${workspaceId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      }
       if (res.ok) {
         const data = await res.json();
         setMeetings(data);
@@ -180,7 +185,7 @@ export function CalendarView({
     try {
       const url = editingMeeting
         ? `${API_URL}/meetings/${editingMeeting.id}`
-        : `${API_URL}/meetings`;
+        : `${API_URL}/workspaces/${workspaceId}/meetings`;
       const method = editingMeeting ? 'PATCH' : 'POST';
 
       const payload: any = {
@@ -190,13 +195,10 @@ export function CalendarView({
         duration: Number(duration),
         channelId: selectedChannelId || undefined,
         participantIds: selectedUserIds,
+        workspaceId,
       };
 
-      if (!editingMeeting) {
-        payload.workspaceId = workspaceId;
-      }
-
-      const res = await fetch(url, {
+      let res = await fetch(url, {
         method,
         headers: {
           'Content-Type': 'application/json',
@@ -205,9 +207,27 @@ export function CalendarView({
         body: JSON.stringify(payload),
       });
 
+      // Fallback to /meetings if /workspaces/:workspaceId/meetings fails with 404
+      if (!res.ok && res.status === 404 && !editingMeeting) {
+        res = await fetch(`${API_URL}/meetings`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(payload),
+        });
+      }
+
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.message || 'Failed to save meeting');
+        let errMessage = 'Failed to save meeting';
+        try {
+          const err = await res.json();
+          errMessage = err.message || errMessage;
+        } catch (_) {
+          errMessage = `Request failed (${res.status} ${res.statusText})`;
+        }
+        throw new Error(errMessage);
       }
 
       await fetchMeetings();
