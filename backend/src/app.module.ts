@@ -13,6 +13,7 @@ import { NotificationsModule } from './notifications/notifications.module.js';
 import { SearchModule } from './search/search.module.js';
 import { RecordingsModule } from './recordings/recordings.module.js';
 import { MeetingsModule } from './meetings/meetings.module.js';
+import { MailModule } from './mail/mail.module.js';
 import configuration from './config/configuration.js';
 
 @Module({
@@ -31,6 +32,7 @@ import configuration from './config/configuration.js';
     SearchModule,
     RecordingsModule,
     MeetingsModule,
+    MailModule,
   ],
   controllers: [AppController],
   providers: [AppService, PrismaService],
