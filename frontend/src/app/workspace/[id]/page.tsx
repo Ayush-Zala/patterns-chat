@@ -352,6 +352,7 @@ function WorkspaceShellContent() {
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
+  const screenAudioCtxRef = useRef<AudioContext | null>(null);
   const [showMobileSidebar, setShowMobileSidebar] = useState(false);
 
   // Calendar, Team Meeting, Fullscreen & Background Call Notification State
@@ -397,6 +398,7 @@ function WorkspaceShellContent() {
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
   const [screenFitMode, setScreenFitMode] = useState<'cover' | 'contain'>('contain');
   const [isPeerScreenSharing, setIsPeerScreenSharing] = useState(false);
+  const [isPeerVideoEnabled, setIsPeerVideoEnabled] = useState(false);
   const [isLocalPipMinimized, setIsLocalPipMinimized] = useState(false);
   const wakeLockRef = useRef<any>(null);
 
@@ -1359,6 +1361,12 @@ function WorkspaceShellContent() {
       screenStreamRef.current.getTracks().forEach((track) => track.stop());
       screenStreamRef.current = null;
     }
+    if (screenAudioCtxRef.current) {
+      try {
+        screenAudioCtxRef.current.close();
+      } catch (e) {}
+      screenAudioCtxRef.current = null;
+    }
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close();
       peerConnectionRef.current = null;
@@ -1387,6 +1395,7 @@ function WorkspaceShellContent() {
     setIsVideoMuted(false);
     setIsScreenSharing(false);
     setHasRemoteVideo(false);
+    setIsPeerVideoEnabled(false);
     setHasLocalCamera(true);
     setShowSpeakerMenu(false);
     setSelectedAudioOutput('default');
@@ -2119,12 +2128,60 @@ function WorkspaceShellContent() {
           alert('Screen sharing is not supported in this browser.');
           return;
         }
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+
+        let screenStream: MediaStream;
+        try {
+          screenStream = await navigator.mediaDevices.getDisplayMedia({
+            video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
+            audio: {
+              echoCancellation: false,
+              noiseSuppression: false,
+              autoGainControl: false,
+            } as any,
+          });
+        } catch (err: any) {
+          if (err.name === 'TypeError' || err.name === 'NotSupportedError') {
+            screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+          } else {
+            throw err;
+          }
+        }
+
         const screenTrack = screenStream.getVideoTracks()[0];
         if (!screenTrack) return;
 
         screenStreamRef.current = screenStream;
         setCallType('video');
+
+        // Check if user shared audio (e.g. YouTube / video player / tab audio)
+        const screenAudioTracks = screenStream.getAudioTracks();
+        const hasScreenAudio = screenAudioTracks.length > 0;
+        let broadcastAudioTrack: MediaStreamTrack | null = null;
+
+        if (hasScreenAudio) {
+          try {
+            const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+            if (AudioContextClass) {
+              const audioCtx = new AudioContextClass();
+              screenAudioCtxRef.current = audioCtx;
+              const destination = audioCtx.createMediaStreamDestination();
+
+              const screenSource = audioCtx.createMediaStreamSource(new MediaStream([screenAudioTracks[0]]));
+              screenSource.connect(destination);
+
+              const micTrack = localStreamRef.current?.getAudioTracks().find((t) => t.readyState === 'live');
+              if (micTrack) {
+                const micSource = audioCtx.createMediaStreamSource(new MediaStream([micTrack]));
+                micSource.connect(destination);
+              }
+
+              broadcastAudioTrack = destination.stream.getAudioTracks()[0] || null;
+            }
+          } catch (audioMixErr) {
+            console.warn('Audio mixing error, using screen audio track directly:', audioMixErr);
+            broadcastAudioTrack = screenAudioTracks[0];
+          }
+        }
 
         const videoSender = pc.getSenders().find((s) => s.track?.kind === 'video' || s.track === null);
         const videoTransceiver = pc.getTransceivers().find((t) => t.receiver.track.kind === 'video');
@@ -2136,6 +2193,14 @@ function WorkspaceShellContent() {
           await videoSender.replaceTrack(screenTrack);
         } else {
           pc.addTrack(screenTrack, screenStream);
+        }
+
+        // Replace audio track with mixed track if screen audio is present
+        if (broadcastAudioTrack) {
+          const audioSender = pc.getSenders().find((s) => s.track?.kind === 'audio');
+          if (audioSender) {
+            await audioSender.replaceTrack(broadcastAudioTrack).catch(() => {});
+          }
         }
 
         // Always perform SDP renegotiation so remote peer definitely receives the new track
@@ -2192,12 +2257,22 @@ function WorkspaceShellContent() {
       screenStreamRef.current = null;
     }
 
+    if (screenAudioCtxRef.current) {
+      try {
+        await screenAudioCtxRef.current.close();
+      } catch (e) {}
+      screenAudioCtxRef.current = null;
+    }
+
     const originalVideoTrack = localStreamRef.current?.getVideoTracks().find((t) => t.readyState === 'live');
+    const originalMicTrack = localStreamRef.current?.getAudioTracks().find((t) => t.readyState === 'live');
+    const hasLiveCamera = !!(originalVideoTrack && !isVideoMuted);
+
     const videoTransceiver = pc.getTransceivers().find((t) => t.receiver.track.kind === 'video');
     const videoSender = pc.getSenders().find((s) => s.track?.kind === 'video');
 
     if (videoTransceiver && videoTransceiver.sender) {
-      if (originalVideoTrack && !isVideoMuted) {
+      if (hasLiveCamera && originalVideoTrack) {
         videoTransceiver.direction = 'sendrecv';
         await videoTransceiver.sender.replaceTrack(originalVideoTrack);
       } else {
@@ -2205,7 +2280,15 @@ function WorkspaceShellContent() {
         await videoTransceiver.sender.replaceTrack(null);
       }
     } else if (videoSender) {
-      await videoSender.replaceTrack(originalVideoTrack && !isVideoMuted ? originalVideoTrack : null);
+      await videoSender.replaceTrack(hasLiveCamera && originalVideoTrack ? originalVideoTrack : null);
+    }
+
+    // Restore original mic audio track (remove mixed screen audio)
+    if (originalMicTrack) {
+      const audioSender = pc.getSenders().find((s) => s.track?.kind === 'audio');
+      if (audioSender) {
+        await audioSender.replaceTrack(originalMicTrack).catch(() => {});
+      }
     }
 
     if (localVideoRef.current) {
@@ -2224,7 +2307,7 @@ function WorkspaceShellContent() {
         });
         getSocket().emit('toggle_video', {
           toUserId: callPeerRef.current.id,
-          videoEnabled: !!(originalVideoTrack && !isVideoMuted),
+          videoEnabled: hasLiveCamera,
         });
         getSocket().emit('toggle_screen_share', {
           toUserId: callPeerRef.current.id,
@@ -2423,12 +2506,17 @@ function WorkspaceShellContent() {
     }
 
     function handlePeerVideoToggled(data: { videoEnabled: boolean }) {
+      setIsPeerVideoEnabled(data.videoEnabled);
       setHasRemoteVideo(data.videoEnabled);
       if (data.videoEnabled) {
         setCallType('video');
         if (remoteVideoRef.current && remoteStreamRef.current) {
           remoteVideoRef.current.srcObject = remoteStreamRef.current;
           remoteVideoRef.current.play().catch(() => {});
+        }
+      } else if (!isPeerScreenSharing) {
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = null;
         }
       }
     }
@@ -2500,6 +2588,12 @@ function WorkspaceShellContent() {
       } else {
         setCallNotificationMsg(`${callPeerRef.current?.name || 'Teammate'} stopped sharing screen`);
         setTimeout(() => setCallNotificationMsg(null), 3000);
+        if (!isPeerVideoEnabled) {
+          setHasRemoteVideo(false);
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = null;
+          }
+        }
       }
     }
 
@@ -8864,7 +8958,7 @@ function WorkspaceShellContent() {
                 )}
 
                 {/* Remote Peer Without Video / Camera Off Fallback */}
-                {callStatus === 'connected' && !hasRemoteVideo && (
+                {callStatus === 'connected' && (!hasRemoteVideo || (!isPeerScreenSharing && !isPeerVideoEnabled)) && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/95 backdrop-blur-xs z-10">
                     <div className="relative">
                       <div className="absolute -inset-4 rounded-full bg-indigo-500/10 animate-pulse" />
