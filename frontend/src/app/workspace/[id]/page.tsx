@@ -307,6 +307,7 @@ function WorkspaceShellContent() {
     from: { id: string; name: string; avatarUrl?: string };
     isVideo: boolean;
     signalData: any;
+    meetingId?: string;
   } | null>(null);
   const [callDuration, setCallDuration] = useState(0);
   const [isMicMuted, setIsMicMuted] = useState(false);
@@ -1562,6 +1563,25 @@ function WorkspaceShellContent() {
 
     const caller = incomingCall.from;
     const isVideo = incomingCall.isVideo;
+
+    // If this call is an invitation to join a Team Meeting / Group Call:
+    if (incomingCall.meetingId) {
+      setActiveTeamMeeting({
+        id: incomingCall.meetingId,
+        workspaceId: workspaceId || '',
+        title: `Team Meeting`,
+        scheduledAt: new Date().toISOString(),
+        duration: 60,
+        hostId: caller.id,
+        status: 'LIVE' as const,
+        createdAt: new Date().toISOString(),
+        host: { id: caller.id, name: caller.name, email: '' },
+        participants: [],
+      });
+      cleanupCall(false);
+      return;
+    }
+
     setCallPeer(caller);
     setCallType(isVideo ? 'video' : 'audio');
     setCallStatus('connected');
@@ -9014,6 +9034,15 @@ function WorkspaceShellContent() {
                 onClick={() => {
                   // Escalate 1-on-1 to a group meeting room
                   const groupMeetingId = `dm-${user?.id}-${callPeer?.id}-${Date.now()}`;
+                  // Invite the peer to join the group meeting
+                  if (callPeer?.id) {
+                    getSocket().emit('call_user', {
+                      toUserId: callPeer.id,
+                      caller: { id: user?.id, name: user?.name, avatarUrl: user?.avatarUrl },
+                      isVideo: callType === 'video',
+                      meetingId: groupMeetingId,
+                    });
+                  }
                   setActiveTeamMeeting({
                     id: groupMeetingId,
                     workspaceId: workspaceId || '',
@@ -9026,7 +9055,7 @@ function WorkspaceShellContent() {
                     host: { id: user?.id || '', name: user?.name || '', email: user?.email || '' },
                     participants: [],
                   });
-                  // End the 1-on-1 call — they'll rejoin via group meeting
+                  // End the 1-on-1 call — they will join the group meeting
                   cleanupCall(false);
                 }}
                 className="p-3 sm:p-3.5 rounded-2xl bg-violet-600 hover:bg-violet-500 text-white transition-all shadow-md shadow-violet-600/30 flex items-center gap-1.5"

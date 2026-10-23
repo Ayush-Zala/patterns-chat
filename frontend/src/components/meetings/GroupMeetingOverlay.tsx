@@ -85,8 +85,11 @@ const ICE_SERVERS: RTCConfiguration = {
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun.relay.metered.ca:80' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    { urls: 'stun:global.stun.twilio.com:3478' },
   ],
+  iceCandidatePoolSize: 10,
 };
 
 // Format seconds as MM:SS
@@ -195,19 +198,34 @@ export function GroupMeetingOverlay({
     async function initMedia() {
       try {
         let stream: MediaStream;
+        const audioConstraints: MediaTrackConstraints = {
+          echoCancellation: { ideal: true },
+          noiseSuppression: { ideal: true },
+          autoGainControl: { ideal: true },
+          sampleRate: { ideal: 48000 },
+          channelCount: { ideal: 1 },
+        };
         try {
           stream = await navigator.mediaDevices.getUserMedia({
-            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-            video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+            audio: audioConstraints,
+            video: { facingMode: 'user', width: { ideal: 1280, max: 1920 }, height: { ideal: 720, max: 1080 } },
           });
           setHasCamera(true);
         } catch {
-          stream = await navigator.mediaDevices.getUserMedia({
-            audio: { echoCancellation: true, noiseSuppression: true },
-            video: false,
-          });
-          setHasCamera(false);
-          setIsVideoMuted(true);
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({
+              audio: audioConstraints,
+              video: true,
+            });
+            setHasCamera(true);
+          } catch {
+            stream = await navigator.mediaDevices.getUserMedia({
+              audio: audioConstraints,
+              video: false,
+            });
+            setHasCamera(false);
+            setIsVideoMuted(true);
+          }
         }
 
         if (!active) { stream.getTracks().forEach((t) => t.stop()); return; }
@@ -270,6 +288,9 @@ export function GroupMeetingOverlay({
       const { signal } = data;
       try {
         if (signal.type === 'offer') {
+          if (pc.signalingState !== 'stable') {
+            await pc.setLocalDescription({ type: 'rollback' } as any).catch(() => {});
+          }
           await pc.setRemoteDescription(new RTCSessionDescription(signal));
           const queued = pendingCandidatesRef.current.get(data.fromSocketId) || [];
           for (const c of queued) await pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {});
@@ -281,7 +302,9 @@ export function GroupMeetingOverlay({
             fromUser: { id: user.id, name: user.name, avatarUrl: user.avatarUrl },
           });
         } else if (signal.type === 'answer') {
-          await pc.setRemoteDescription(new RTCSessionDescription(signal));
+          if (pc.signalingState === 'have-local-offer') {
+            await pc.setRemoteDescription(new RTCSessionDescription(signal));
+          }
           const queued = pendingCandidatesRef.current.get(data.fromSocketId) || [];
           for (const c of queued) await pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {});
           pendingCandidatesRef.current.delete(data.fromSocketId);
@@ -329,6 +352,14 @@ export function GroupMeetingOverlay({
         }
         return next;
       });
+
+      // Auto-spotlight when someone starts sharing screen (Zoom/Teams style)
+      if (data.isScreenSharing) {
+        setPinnedSocketId(data.socketId);
+        setScreenFitMode('contain');
+      } else if (data.isScreenSharing === false) {
+        setPinnedSocketId((current) => (current === data.socketId ? null : current));
+      }
     }
 
     function handleMeetingChat(data: ChatMessage) {
@@ -382,6 +413,13 @@ export function GroupMeetingOverlay({
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
     }
 
+    // If local stream has no video (audio-only join), add video transceiver so remote video/screen can be received
+    if (!stream || stream.getVideoTracks().length === 0) {
+      try {
+        pc.addTransceiver('video', { direction: 'recvonly' });
+      } catch (e) {}
+    }
+
     // ICE candidates
     pc.onicecandidate = (event) => {
       if (event.candidate) {
@@ -395,24 +433,34 @@ export function GroupMeetingOverlay({
     // Connection state changes
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === 'failed') {
-        // Try to restart ICE
         pc.restartIce();
       }
     };
 
-    // Handle remote tracks
+    // Handle remote tracks (direct track + streams, fresh MediaStream instance on changes)
     const remoteStream = new MediaStream();
     pc.ontrack = (event) => {
-      event.streams[0]?.getTracks().forEach((track) => {
-        if (!remoteStream.getTracks().find((t) => t.id === track.id)) {
-          remoteStream.addTrack(track);
+      if (event.track) {
+        if (!remoteStream.getTracks().find((t) => t.id === event.track.id)) {
+          remoteStream.addTrack(event.track);
         }
-      });
+      }
+      if (event.streams && event.streams[0]) {
+        event.streams[0].getTracks().forEach((track) => {
+          if (!remoteStream.getTracks().find((t) => t.id === track.id)) {
+            remoteStream.addTrack(track);
+          }
+        });
+      }
 
       setRemotePeers((prev) => {
         const next = new Map(prev);
         const existing = next.get(targetSocketId);
-        next.set(targetSocketId, { ...(existing || { socketId: targetSocketId, user: peerUser }), stream: remoteStream });
+        const freshStream = new MediaStream(remoteStream.getTracks());
+        next.set(targetSocketId, {
+          ...(existing || { socketId: targetSocketId, user: peerUser }),
+          stream: freshStream,
+        });
         return next;
       });
     };
@@ -506,61 +554,123 @@ export function GroupMeetingOverlay({
   }
 
   async function toggleScreenShare() {
-    const stream = localStreamRef.current;
     if (isScreenSharing) {
-      // Stop screen share → restore camera
-      try {
-        if (screenStreamRef.current) {
-          screenStreamRef.current.getTracks().forEach((t) => t.stop());
-          screenStreamRef.current = null;
-        }
-        if (stream && hasCamera && !isVideoMuted) {
-          const camStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode } });
-          const camTrack = camStream.getVideoTracks()[0];
-          const oldTrack = stream.getVideoTracks()[0];
-          if (oldTrack) { stream.removeTrack(oldTrack); oldTrack.stop(); }
-          stream.addTrack(camTrack);
-          peerConnectionsRef.current.forEach((pc) => {
-            const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
-            if (sender) sender.replaceTrack(camTrack);
-          });
-          if (localVideoRef.current) localVideoRef.current.srcObject = stream;
-        }
-        setIsScreenSharing(false);
-        socket.emit('meeting_media_toggle', { meetingId, isScreenSharing: false });
-      } catch (e) {
-        setIsScreenSharing(false);
-      }
+      await stopScreenSharing();
     } else {
-      try {
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-        const screenTrack = screenStream.getVideoTracks()[0];
-        screenStreamRef.current = screenStream;
+      await startScreenSharing();
+    }
+  }
 
-        screenTrack.onended = () => toggleScreenShare();
+  async function startScreenSharing() {
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      alert('Screen sharing is not supported in this browser.');
+      return;
+    }
+    try {
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
+        audio: false,
+      });
+      const screenTrack = screenStream.getVideoTracks()[0];
+      if (!screenTrack) return;
 
-        if (stream) {
-          const oldTrack = stream.getVideoTracks()[0];
-          if (oldTrack) { stream.removeTrack(oldTrack); oldTrack.stop(); }
-          stream.addTrack(screenTrack);
+      screenStreamRef.current = screenStream;
+
+      // Handle when user stops sharing via browser bar
+      screenTrack.onended = () => {
+        stopScreenSharing();
+      };
+
+      // Replace or add track on all active peer connections
+      for (const pc of peerConnectionsRef.current.values()) {
+        if (pc.signalingState === 'closed') continue;
+        const videoTransceiver = pc.getTransceivers().find((t) => t.receiver.track.kind === 'video');
+        const videoSender = pc.getSenders().find((s) => s.track?.kind === 'video' || s.track === null);
+
+        if (videoTransceiver && videoTransceiver.sender) {
+          videoTransceiver.direction = 'sendrecv';
+          await videoTransceiver.sender.replaceTrack(screenTrack).catch(() => {});
+        } else if (videoSender) {
+          await videoSender.replaceTrack(screenTrack).catch(() => {});
+        } else {
+          if (localStreamRef.current) pc.addTrack(screenTrack, localStreamRef.current);
         }
+      }
 
-        // Add/replace on all peer connections
-        peerConnectionsRef.current.forEach((pc) => {
-          const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
-          if (sender) {
-            sender.replaceTrack(screenTrack);
-          } else {
-            // No video sender exists yet — add the track
-            if (stream) pc.addTrack(screenTrack, stream);
-          }
+      // Show screen stream in local preview
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = screenStream;
+        localVideoRef.current.play().catch(() => {});
+      }
+
+      setIsScreenSharing(true);
+      setPinnedSocketId('self');
+      setScreenFitMode('contain');
+      socket.emit('meeting_media_toggle', { meetingId, isScreenSharing: true });
+
+      // Always perform SDP renegotiation so all remote peers receive the new screen track
+      await renegotiateAll();
+    } catch (err: any) {
+      if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
+        console.error('Screen sharing error:', err);
+      }
+      setIsScreenSharing(false);
+    }
+  }
+
+  async function stopScreenSharing() {
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((t) => t.stop());
+      screenStreamRef.current = null;
+    }
+
+    const stream = localStreamRef.current;
+    const originalVideoTrack = stream?.getVideoTracks().find((t) => t.readyState === 'live');
+
+    for (const pc of peerConnectionsRef.current.values()) {
+      if (pc.signalingState === 'closed') continue;
+      const videoTransceiver = pc.getTransceivers().find((t) => t.receiver.track.kind === 'video');
+      const videoSender = pc.getSenders().find((s) => s.track?.kind === 'video');
+
+      if (videoTransceiver && videoTransceiver.sender) {
+        if (originalVideoTrack && !isVideoMuted) {
+          videoTransceiver.direction = 'sendrecv';
+          await videoTransceiver.sender.replaceTrack(originalVideoTrack).catch(() => {});
+        } else {
+          videoTransceiver.direction = 'recvonly';
+          await videoTransceiver.sender.replaceTrack(null).catch(() => {});
+        }
+      } else if (videoSender) {
+        await videoSender.replaceTrack(originalVideoTrack && !isVideoMuted ? originalVideoTrack : null).catch(() => {});
+      }
+    }
+
+    if (localVideoRef.current && stream) {
+      localVideoRef.current.srcObject = stream;
+      localVideoRef.current.play().catch(() => {});
+    }
+
+    setIsScreenSharing(false);
+    setPinnedSocketId((cur) => cur === 'self' ? null : cur);
+    socket.emit('meeting_media_toggle', { meetingId, isScreenSharing: false });
+
+    await renegotiateAll();
+  }
+
+  async function renegotiateAll() {
+    for (const [targetSocketId, pc] of peerConnectionsRef.current.entries()) {
+      try {
+        if (pc.signalingState === 'closed') continue;
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        socket.emit('meeting_peer_signal', {
+          meetingId,
+          toSocketId: targetSocketId,
+          signal: pc.localDescription,
+          fromUser: { id: user.id, name: user.name, avatarUrl: user.avatarUrl },
         });
-
-        if (localVideoRef.current && stream) localVideoRef.current.srcObject = stream;
-        setIsScreenSharing(true);
-        socket.emit('meeting_media_toggle', { meetingId, isScreenSharing: true });
-      } catch (err) {
-        console.warn('Screen sharing cancelled or failed:', err);
+      } catch (e) {
+        console.warn('Renegotiation error for', targetSocketId, e);
       }
     }
   }
@@ -580,25 +690,69 @@ export function GroupMeetingOverlay({
     }
   }
 
-  // ── In-Meeting Recording ───────────────────────────────────────
+  // ── In-Meeting Recording (Mixes Local + Remote Audio + Active Screen/Camera) ──
   function startRecording() {
-    const stream = localStreamRef.current;
-    if (!stream || isRecording) return;
+    if (isRecording) return;
     try {
+      recordedChunksRef.current = [];
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) {
+        alert('AudioContext not supported in this browser.');
+        return;
+      }
+      const audioCtx = new AudioCtx();
+      const dest = audioCtx.createMediaStreamDestination();
+
+      // 1. Connect local audio
+      if (localStreamRef.current && localStreamRef.current.getAudioTracks().length > 0) {
+        try {
+          const src = audioCtx.createMediaStreamSource(localStreamRef.current);
+          src.connect(dest);
+        } catch (e) {}
+      }
+
+      // 2. Connect all remote peer audio tracks
+      peersArray.forEach((peer) => {
+        if (peer.stream && peer.stream.getAudioTracks().length > 0) {
+          try {
+            const peerSrc = audioCtx.createMediaStreamSource(peer.stream);
+            peerSrc.connect(dest);
+          } catch (e) {}
+        }
+      });
+
+      // 3. Assemble record stream
+      const recordStream = new MediaStream();
+      const mixedAudioTrack = dest.stream.getAudioTracks()[0];
+      if (mixedAudioTrack) recordStream.addTrack(mixedAudioTrack);
+
+      // Video track: If sharing screen or someone else is sharing screen or camera
+      const screenTrack = screenStreamRef.current?.getVideoTracks().find((t) => t.readyState === 'live');
+      const remoteScreenTrack = peersArray.find((p) => p.isScreenSharing)?.stream?.getVideoTracks().find((t) => t.readyState === 'live');
+      const localCameraTrack = localStreamRef.current?.getVideoTracks().find((t) => t.readyState === 'live');
+      const remoteCameraTrack = peersArray.find((p) => p.stream?.getVideoTracks().length)?.stream?.getVideoTracks().find((t) => t.readyState === 'live');
+
+      const videoTrackToRecord = screenTrack || remoteScreenTrack || localCameraTrack || remoteCameraTrack;
+      if (videoTrackToRecord) recordStream.addTrack(videoTrackToRecord);
+
       const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
         ? 'video/webm;codecs=vp9,opus'
+        : MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')
+        ? 'video/webm;codecs=vp8,opus'
         : 'video/webm';
-      recordedChunksRef.current = [];
-      const mr = new MediaRecorder(stream, { mimeType });
-      mr.ondataavailable = (e) => { if (e.data.size > 0) recordedChunksRef.current.push(e.data); };
+
+      const mr = new MediaRecorder(recordStream, { mimeType });
+      mr.ondataavailable = (e) => { if (e.data && e.data.size > 0) recordedChunksRef.current.push(e.data); };
       mr.onstop = () => {
-        const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+        const hasVideo = recordStream.getVideoTracks().length > 0;
+        const blob = new Blob(recordedChunksRef.current, { type: hasVideo ? mimeType : 'audio/webm' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `meeting-${meetingId.slice(0, 8)}-${Date.now()}.webm`;
+        a.download = `meeting-${meetingTitle.replace(/\s+/g, '_')}-${Date.now()}.webm`;
         a.click();
         URL.revokeObjectURL(url);
+        audioCtx.close().catch(() => {});
       };
       mr.start(1000);
       mediaRecorderRef.current = mr;
@@ -683,6 +837,14 @@ export function GroupMeetingOverlay({
       className="fixed inset-0 z-[100] w-screen h-[100dvh] bg-[#0A0D14] flex flex-col overflow-hidden text-white select-none"
       style={{ fontFamily: "'Inter', system-ui, sans-serif" }}
     >
+      {/* Dedicated Remote Audio Elements (one per peer, never unmounted across layout changes) */}
+      {peersArray.map((peer) => (
+        <RemotePeerAudioElement
+          key={peer.socketId}
+          stream={peer.stream}
+          selectedAudioOutput={selectedAudioOutput}
+        />
+      ))}
       {/* ── TOP HEADER ──────────────────────────────────────────── */}
       <div className="h-14 px-4 sm:px-5 bg-[#111827]/90 backdrop-blur-md border-b border-white/5 flex items-center justify-between shrink-0 z-30">
         <div className="flex items-center gap-3 min-w-0">
@@ -1247,6 +1409,8 @@ function LocalVideoTile({
   isPinned?: boolean;
   hasHandRaised?: boolean;
 }) {
+  const hideLocalCamera = isVideoMuted && !isScreenSharing;
+
   return (
     <div className="w-full h-full relative group">
       <video
@@ -1254,9 +1418,11 @@ function LocalVideoTile({
         autoPlay
         playsInline
         muted
-        className={`w-full h-full ${screenFitMode === 'contain' ? 'object-contain' : 'object-cover'} ${isVideoMuted ? 'opacity-0' : 'opacity-100'}`}
+        className={`w-full h-full ${
+          isScreenSharing || screenFitMode === 'contain' ? 'object-contain' : 'object-cover'
+        } ${hideLocalCamera ? 'opacity-0' : 'opacity-100'}`}
       />
-      {isVideoMuted && (
+      {hideLocalCamera && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#0F1623]">
           <img
             src={user.avatarUrl || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(user.name)}`}
@@ -1388,6 +1554,40 @@ function ParticipantRow({
   );
 }
 
+// ── Dedicated Remote Peer Audio Element ───────────────────────────
+function RemotePeerAudioElement({
+  stream,
+  selectedAudioOutput,
+}: {
+  stream?: MediaStream;
+  selectedAudioOutput: string;
+}) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    const el = audioRef.current;
+    if (!el || !stream) return;
+    if (el.srcObject !== stream) {
+      el.srcObject = stream;
+    }
+    el.volume = 1.0;
+    el.play().catch(() => {});
+
+    if (selectedAudioOutput && 'setSinkId' in HTMLMediaElement.prototype) {
+      (el as any).setSinkId(selectedAudioOutput).catch(() => {});
+    }
+  }, [stream, selectedAudioOutput]);
+
+  return (
+    <audio
+      ref={audioRef}
+      autoPlay
+      playsInline
+      style={{ display: 'none' }}
+    />
+  );
+}
+
 // ── Remote Peer Video Tile ─────────────────────────────────────────
 function PeerVideoTile({
   peer,
@@ -1400,12 +1600,18 @@ function PeerVideoTile({
 
   useEffect(() => {
     if (videoRef.current && peer.stream) {
-      videoRef.current.srcObject = peer.stream;
+      if (videoRef.current.srcObject !== peer.stream) {
+        videoRef.current.srcObject = peer.stream;
+      }
       videoRef.current.play().catch(() => {});
     }
-  }, [peer.stream]);
+  }, [peer.stream, peer.isScreenSharing, peer.isVideoMuted]);
 
-  if (peer.isVideoMuted || !peer.stream || peer.stream.getVideoTracks().length === 0) {
+  const hasVideoTrack = !!peer.stream && peer.stream.getVideoTracks().some((t) => t.readyState !== 'ended');
+  // Always show video if screen sharing, or if camera is on
+  const showVideo = !!peer.isScreenSharing || (hasVideoTrack && !peer.isVideoMuted);
+
+  if (!showVideo) {
     return (
       <div className="w-full h-full flex flex-col items-center justify-center bg-[#0F1623]">
         <img
@@ -1414,6 +1620,11 @@ function PeerVideoTile({
           className="h-16 w-16 sm:h-20 sm:w-20 rounded-full border-2 border-white/10 object-cover"
         />
         <span className="mt-2.5 text-xs font-bold text-slate-300">{peer.user.name}</span>
+        {peer.isMicMuted && (
+          <span className="mt-1.5 flex items-center gap-1 text-[11px] text-rose-400 font-medium">
+            <MicOff className="h-3 w-3" /> Muted
+          </span>
+        )}
       </div>
     );
   }
@@ -1423,7 +1634,10 @@ function PeerVideoTile({
       ref={videoRef}
       autoPlay
       playsInline
-      className={`w-full h-full ${screenFitMode === 'contain' ? 'object-contain' : 'object-cover'} bg-[#0F1623]`}
+      muted /* Audio is handled by RemotePeerAudioElement to eliminate feedback and echo */
+      className={`w-full h-full ${
+        peer.isScreenSharing || screenFitMode === 'contain' ? 'object-contain' : 'object-cover'
+      } bg-[#0F1623]`}
     />
   );
 }
