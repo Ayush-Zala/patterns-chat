@@ -119,12 +119,12 @@ export default function RegisterPage() {
       {/* ─────────────────────────────────────────────────────────────
           TOP HEADER
       ───────────────────────────────────────────────────────────── */}
-      <header className="w-full max-w-7xl mx-auto px-6 sm:px-8 lg:px-12 py-3 sm:py-4 flex items-center justify-between z-20 shrink-0">
+      <header className="w-full max-w-7xl mx-auto px-6 sm:px-8 lg:px-12 py-2 sm:py-2.5 flex items-center justify-between z-20 shrink-0">
         <Link href="/" className="flex items-center gap-2.5 group">
           <img
             src="/patterns-icon.png?v=2"
             alt="Patterns Chat"
-            className="h-8 w-auto object-contain transition-transform group-hover:scale-105"
+            className="h-7.5 w-auto object-contain transition-transform group-hover:scale-105"
           />
           <div className="flex items-center gap-1 font-black text-xl tracking-tight text-slate-900">
             <span>Patterns</span>
@@ -138,7 +138,7 @@ export default function RegisterPage() {
           </span>
           <Link
             href="/login"
-            className="px-4 py-2 rounded-xl border border-indigo-200/90 hover:border-indigo-300 bg-white hover:bg-indigo-50/70 text-indigo-600 font-bold text-xs sm:text-sm transition-all flex items-center gap-1.5 shadow-2xs group"
+            className="px-3.5 py-1.5 rounded-xl border border-indigo-200/90 hover:border-indigo-300 bg-white hover:bg-indigo-50/70 text-indigo-600 font-bold text-xs sm:text-sm transition-all flex items-center gap-1.5 shadow-2xs group"
           >
             <span>Sign In</span>
             <ArrowRight className="h-3.5 w-3.5 group-hover:translate-x-0.5 transition-transform" />
@@ -149,32 +149,32 @@ export default function RegisterPage() {
       {/* ─────────────────────────────────────────────────────────────
           MAIN CONTENT: 2-COLUMN BALANCED SPLIT
       ───────────────────────────────────────────────────────────── */}
-      <main className="max-w-7xl mx-auto px-6 sm:px-8 lg:px-12 flex-1 flex items-center justify-center w-full z-20 min-h-0 overflow-hidden">
-        <div className="w-full grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-10 xl:gap-16 items-center">
+      <main className="max-w-7xl mx-auto px-6 sm:px-8 lg:px-12 flex-1 flex items-center justify-center w-full z-20 min-h-0 py-1">
+        <div className="w-full grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-10 xl:gap-14 items-center">
           {/* ── LEFT COLUMN: Brand Story & Features ─────────────────── */}
           <div className="hidden lg:flex lg:col-span-6 xl:col-span-7 flex-col justify-center pr-2">
             {/* Pill Badge */}
-            <div className="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-indigo-50/90 border border-indigo-200/80 text-indigo-600 text-xs font-bold mb-3 self-start shadow-2xs">
+            <div className="inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full bg-indigo-50/90 border border-indigo-200/80 text-indigo-600 text-xs font-bold mb-2 self-start shadow-2xs">
               <Sparkles className="h-3.5 w-3.5 text-indigo-600" />
               <span>Get Started in 30 Seconds</span>
             </div>
 
             {/* Headline */}
-            <h1 className="text-3xl lg:text-[40px] xl:text-[46px] font-black tracking-tight text-slate-900 leading-[1.14]">
+            <h1 className="text-2xl lg:text-[34px] xl:text-[40px] font-black tracking-tight text-slate-900 leading-[1.14]">
               Join Your Team on
-              <span className="block text-indigo-600 mt-1">Patterns Chat.</span>
+              <span className="block text-indigo-600 mt-0.5">Patterns Chat.</span>
             </h1>
 
             {/* Subtitle */}
-            <p className="mt-3 text-sm lg:text-base text-slate-600 font-normal leading-relaxed max-w-lg">
+            <p className="mt-1.5 text-xs sm:text-sm text-slate-600 font-normal leading-relaxed max-w-lg">
               Fast, intelligent, enterprise-grade team messaging, high-definition video calls, and instant collaboration.
             </p>
 
             {/* 4 Feature Items */}
-            <div className="mt-5 grid grid-cols-2 gap-3 max-w-xl">
-              <div className="flex items-start gap-3 p-2.5 rounded-2xl bg-white/70 border border-slate-200/70 shadow-2xs backdrop-blur-xs">
-                <div className="h-9 w-9 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0 border border-indigo-100 shadow-2xs">
-                  <MessageSquare className="h-4 w-4" />
+            <div className="mt-3 grid grid-cols-2 gap-2 max-w-xl">
+              <div className="flex items-start gap-2.5 p-2 rounded-2xl bg-white/70 border border-slate-200/70 shadow-2xs backdrop-blur-xs">
+                <div className="h-7.5 w-7.5 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0 border border-indigo-100 shadow-2xs">
+                  <MessageSquare className="h-3.5 w-3.5" />
                 </div>
                 <div>
                   <h3 className="text-xs font-bold text-slate-900 leading-tight">Team Messaging</h3>
@@ -182,9 +182,9 @@ export default function RegisterPage() {
                 </div>
               </div>
 
-              <div className="flex items-start gap-3 p-2.5 rounded-2xl bg-white/70 border border-slate-200/70 shadow-2xs backdrop-blur-xs">
-                <div className="h-9 w-9 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0 border border-indigo-100 shadow-2xs">
-                  <Video className="h-4 w-4" />
+              <div className="flex items-start gap-2.5 p-2 rounded-2xl bg-white/70 border border-slate-200/70 shadow-2xs backdrop-blur-xs">
+                <div className="h-7.5 w-7.5 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0 border border-indigo-100 shadow-2xs">
+                  <Video className="h-3.5 w-3.5" />
                 </div>
                 <div>
                   <h3 className="text-xs font-bold text-slate-900 leading-tight">HD Video Calls</h3>
@@ -192,9 +192,9 @@ export default function RegisterPage() {
                 </div>
               </div>
 
-              <div className="flex items-start gap-3 p-2.5 rounded-2xl bg-white/70 border border-slate-200/70 shadow-2xs backdrop-blur-xs">
-                <div className="h-9 w-9 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0 border border-indigo-100 shadow-2xs">
-                  <FileText className="h-4 w-4" />
+              <div className="flex items-start gap-2.5 p-2 rounded-2xl bg-white/70 border border-slate-200/70 shadow-2xs backdrop-blur-xs">
+                <div className="h-7.5 w-7.5 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0 border border-indigo-100 shadow-2xs">
+                  <FileText className="h-3.5 w-3.5" />
                 </div>
                 <div>
                   <h3 className="text-xs font-bold text-slate-900 leading-tight">Fast Sharing</h3>
@@ -202,9 +202,9 @@ export default function RegisterPage() {
                 </div>
               </div>
 
-              <div className="flex items-start gap-3 p-2.5 rounded-2xl bg-white/70 border border-slate-200/70 shadow-2xs backdrop-blur-xs">
-                <div className="h-9 w-9 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0 border border-indigo-100 shadow-2xs">
-                  <Calendar className="h-4 w-4" />
+              <div className="flex items-start gap-2.5 p-2 rounded-2xl bg-white/70 border border-slate-200/70 shadow-2xs backdrop-blur-xs">
+                <div className="h-7.5 w-7.5 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0 border border-indigo-100 shadow-2xs">
+                  <Calendar className="h-3.5 w-3.5" />
                 </div>
                 <div>
                   <h3 className="text-xs font-bold text-slate-900 leading-tight">Calendar Sync</h3>
@@ -214,14 +214,14 @@ export default function RegisterPage() {
             </div>
 
             {/* Social Proof */}
-            <div className="mt-5 flex items-center gap-3.5 pt-1">
-              <div className="flex -space-x-2">
+            <div className="mt-3 flex items-center gap-3 pt-0.5">
+              <div className="flex -space-x-1.5">
                 {['1534528741775-53994a69daeb', '1507003211169-0a1dd7228f2d', '1494790108377-be9c29b29330', '1500648767791-00dcc994a43e'].map((id) => (
                   <img
                     key={id}
                     src={`https://images.unsplash.com/photo-${id}?w=80&auto=format&fit=crop&q=80`}
                     alt="Teammate"
-                    className="h-7 w-7 rounded-full border-2 border-white object-cover shadow-2xs"
+                    className="h-5.5 w-5.5 rounded-full border border-white object-cover shadow-2xs"
                   />
                 ))}
               </div>
@@ -232,30 +232,30 @@ export default function RegisterPage() {
                   ))}
                   <span className="text-xs font-bold text-slate-800 ml-1">4.9 / 5</span>
                 </div>
-                <span className="text-xs font-medium text-slate-500">
+                <span className="text-[11px] font-medium text-slate-500">
                   Trusted by 10,000+ teams worldwide
                 </span>
               </div>
             </div>
           </div>
 
-          {/* ── RIGHT COLUMN: Substantial Register Card ── */}
+          {/* ── RIGHT COLUMN: Substantial & Perfectly Fitted Register Card ── */}
           <div className="lg:col-span-6 xl:col-span-5 flex justify-center w-full">
-            <div className="w-full max-w-[425px] sm:max-w-[440px] bg-white rounded-3xl border border-slate-200/80 shadow-[0_20px_50px_rgba(79,70,229,0.09)] p-6 sm:p-7 relative shrink-0">
+            <div className="w-full max-w-[415px] sm:max-w-[425px] bg-white rounded-3xl border border-slate-200/80 shadow-[0_16px_40px_rgba(79,70,229,0.08)] p-4 sm:p-5 relative shrink-0">
               {/* Card Header with HD Patterns Logo */}
               <div className="flex flex-col items-center justify-center text-center">
                 <div className="flex items-center justify-center gap-2">
                   <img
                     src="/patterns-icon.png?v=2"
                     alt="Patterns"
-                    className="h-7 w-auto object-contain"
+                    className="h-6 w-auto object-contain"
                   />
-                  <div className="flex items-center gap-1 font-black text-xl tracking-tight text-slate-900">
+                  <div className="flex items-center gap-1 font-black text-lg tracking-tight text-slate-900">
                     <span>Patterns</span>
                     <span className="text-indigo-600">Chat</span>
                   </div>
                 </div>
-                <h2 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight mt-1.5">
+                <h2 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight mt-0.5">
                   Create Your Account
                 </h2>
                 <p className="text-xs text-slate-500 mt-0.5 max-w-xs">
@@ -264,17 +264,17 @@ export default function RegisterPage() {
               </div>
 
               {/* Segmented Pill Switcher */}
-              <div className="mt-3.5 flex items-center p-1 bg-slate-100/90 rounded-xl border border-slate-200/60">
+              <div className="mt-2 flex items-center p-0.5 bg-slate-100/90 rounded-xl border border-slate-200/60">
                 <Link
                   href="/login"
-                  className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg text-slate-600 hover:text-slate-900 font-semibold text-xs sm:text-sm transition-all"
+                  className="flex-1 flex items-center justify-center gap-1.5 py-1 px-3 rounded-lg text-slate-600 hover:text-slate-900 font-semibold text-xs transition-all"
                 >
                   <LogIn className="h-3.5 w-3.5" />
                   <span>Login</span>
                 </Link>
                 <button
                   type="button"
-                  className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg bg-indigo-600 text-white font-bold text-xs sm:text-sm shadow-xs transition-all"
+                  className="flex-1 flex items-center justify-center gap-1.5 py-1 px-3 rounded-lg bg-indigo-600 text-white font-bold text-xs shadow-xs transition-all"
                 >
                   <UserPlus className="h-3.5 w-3.5" />
                   <span>Sign Up</span>
@@ -283,72 +283,72 @@ export default function RegisterPage() {
 
               {/* Error Alert */}
               {error && (
-                <div className="mt-2.5 rounded-xl border border-rose-200 bg-rose-50 p-2.5 text-xs text-rose-700 flex items-center gap-2 animate-in fade-in">
-                  <AlertCircle className="h-4 w-4 shrink-0 text-rose-500" />
+                <div className="mt-1.5 rounded-xl border border-rose-200 bg-rose-50 p-2 text-xs text-rose-700 flex items-center gap-1.5 animate-in fade-in">
+                  <AlertCircle className="h-3.5 w-3.5 shrink-0 text-rose-500" />
                   <span className="text-xs font-medium leading-snug">{error}</span>
                 </div>
               )}
 
               {/* Form */}
-              <form onSubmit={handleSubmit} className="mt-3 space-y-2.5">
+              <form onSubmit={handleSubmit} className="mt-2 space-y-1.5">
                 {/* Full Name */}
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                  <label className="block text-xs font-bold text-slate-700 mb-0.5">
                     Full Name <span className="text-indigo-600">*</span>
                   </label>
                   <div className="relative">
-                    <User className="h-4 w-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <User className="h-3.5 w-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                     <input
                       type="text"
                       required
                       value={name}
                       onChange={(e) => setName(e.target.value)}
                       placeholder="Jane Doe"
-                      className="w-full pl-9 pr-3.5 py-2 rounded-xl border border-slate-200 bg-white text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 transition-all shadow-2xs"
+                      className="w-full pl-8.5 pr-3.5 py-1.5 rounded-xl border border-slate-200 bg-white text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 transition-all shadow-2xs"
                     />
                   </div>
                 </div>
 
                 {/* Email Address */}
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                  <label className="block text-xs font-bold text-slate-700 mb-0.5">
                     Email Address <span className="text-indigo-600">*</span>
                   </label>
                   <div className="relative">
-                    <Mail className="h-4 w-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <Mail className="h-3.5 w-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                     <input
                       type="email"
                       required
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       placeholder="name@company.com"
-                      className="w-full pl-9 pr-3.5 py-2 rounded-xl border border-slate-200 bg-white text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 transition-all shadow-2xs"
+                      className="w-full pl-8.5 pr-3.5 py-1.5 rounded-xl border border-slate-200 bg-white text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 transition-all shadow-2xs"
                     />
                   </div>
                 </div>
 
                 {/* Password */}
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                  <label className="block text-xs font-bold text-slate-700 mb-0.5">
                     Password <span className="text-indigo-600">*</span>
                   </label>
                   <div className="relative">
-                    <Lock className="h-4 w-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <Lock className="h-3.5 w-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                     <input
                       type={showPassword ? 'text' : 'password'}
                       required
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       placeholder="Create a strong password"
-                      className="w-full pl-9 pr-9 py-2 rounded-xl border border-slate-200 bg-white text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 transition-all shadow-2xs"
+                      className="w-full pl-8.5 pr-8.5 py-1.5 rounded-xl border border-slate-200 bg-white text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 transition-all shadow-2xs"
                     />
                     <button
                       type="button"
                       onClick={() => setShowPassword(!showPassword)}
-                      className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600 transition-colors"
+                      className="absolute inset-y-0 right-0 pr-2.5 flex items-center text-slate-400 hover:text-slate-600 transition-colors"
                       tabIndex={-1}
                     >
-                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      {showPassword ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                     </button>
                   </div>
                 </div>
@@ -357,28 +357,28 @@ export default function RegisterPage() {
                 <button
                   type="submit"
                   disabled={isSubmitting || isGoogleSubmitting}
-                  className="w-full mt-1.5 py-2.5 sm:py-3 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:scale-[0.99] text-white font-bold text-xs sm:text-sm shadow-md shadow-indigo-600/25 flex items-center justify-center gap-2 transition-all disabled:opacity-50"
+                  className="w-full mt-1 py-2 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:scale-[0.99] text-white font-bold text-xs sm:text-sm shadow-md shadow-indigo-600/25 flex items-center justify-center gap-2 transition-all disabled:opacity-50"
                 >
                   {isSubmitting ? (
                     <>
-                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
                       <span>Creating Account...</span>
                     </>
                   ) : (
                     <>
                       <span>Create Account</span>
-                      <ArrowRight className="h-4 w-4" />
+                      <ArrowRight className="h-3.5 w-3.5" />
                     </>
                   )}
                 </button>
               </form>
 
               {/* Divider */}
-              <div className="relative flex items-center justify-center my-3">
+              <div className="relative flex items-center justify-center my-1.5">
                 <div className="absolute inset-0 flex items-center">
                   <div className="w-full border-t border-slate-100" />
                 </div>
-                <span className="relative bg-white px-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                <span className="relative bg-white px-2.5 text-[9px] font-bold text-slate-400 uppercase tracking-wider">
                   or continue with
                 </span>
               </div>
@@ -388,12 +388,12 @@ export default function RegisterPage() {
                 type="button"
                 onClick={() => setShowGoogleModal(true)}
                 disabled={isSubmitting || isGoogleSubmitting}
-                className="w-full py-2.5 px-4 rounded-xl border border-slate-200/90 bg-white hover:bg-slate-50 active:scale-[0.99] transition-all flex items-center justify-center gap-2.5 text-xs sm:text-sm font-bold text-slate-700 shadow-2xs hover:border-slate-300 disabled:opacity-50 group"
+                className="w-full py-1.5 sm:py-2 px-4 rounded-xl border border-slate-200/90 bg-white hover:bg-slate-50 active:scale-[0.99] transition-all flex items-center justify-center gap-2.5 text-xs sm:text-sm font-bold text-slate-700 shadow-2xs hover:border-slate-300 disabled:opacity-50 group"
                 title="Sign up with your Google account"
               >
                 {isGoogleSubmitting ? (
                   <>
-                    <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-indigo-600" />
                     <span>Signing up with Google...</span>
                   </>
                 ) : (
@@ -422,7 +422,7 @@ export default function RegisterPage() {
               </button>
 
               {/* Card Footer */}
-              <div className="mt-3 text-center text-xs text-slate-500">
+              <div className="mt-2 text-center text-xs text-slate-500">
                 Already have an account?{' '}
                 <Link href="/login" className="font-bold text-indigo-600 hover:text-indigo-700 hover:underline">
                   Sign in
@@ -434,7 +434,7 @@ export default function RegisterPage() {
       </main>
 
       {/* Footer */}
-      <footer className="w-full py-2.5 text-center text-xs text-slate-400 z-20 shrink-0">
+      <footer className="w-full py-1 text-center text-[11px] text-slate-400 z-20 shrink-0">
         © 2026 Patterns Chat Technologies. All rights reserved.
       </footer>
 
