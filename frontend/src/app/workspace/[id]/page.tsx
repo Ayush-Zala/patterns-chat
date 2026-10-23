@@ -89,6 +89,9 @@ import {
   Presentation,
   LayoutGrid,
   PictureInPicture,
+  MoreHorizontal,
+  Home,
+  Folder,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { Workspace, WorkspaceMember, WorkspaceRole, Meeting } from '@/types/auth';
@@ -185,6 +188,119 @@ function CodeBlockView({ content }: { content: string }) {
   );
 }
 
+// Image 3 Style Video Player Card with Centered Play Button & Codec Error Fallback
+function VideoAttachmentCard({
+  att,
+  fullUrl,
+  downloadUrl,
+  formatFileSize,
+}: {
+  att: Attachment;
+  fullUrl: string;
+  downloadUrl: string;
+  formatFileSize: (bytes?: number) => string;
+}) {
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [hasError, setHasError] = useState(false);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  if (hasError) {
+    return (
+      <div className="rounded-2xl border border-slate-200/90 bg-white p-3 max-w-md shadow-xs flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="h-10 w-10 rounded-xl bg-indigo-50 border border-indigo-200/80 flex items-center justify-center text-indigo-600 shrink-0">
+            <Film className="h-5 w-5" />
+          </div>
+          <div className="flex flex-col min-w-0">
+            <span className="font-bold text-xs text-slate-900 truncate">{att.fileName}</span>
+            <span className="text-[10px] text-slate-400 font-mono">
+              {formatFileSize(att.fileSize)} • Video File
+            </span>
+          </div>
+        </div>
+        <a
+          href={downloadUrl}
+          download={att.fileName}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-semibold text-slate-700 transition-colors shrink-0 shadow-2xs"
+        >
+          <Download className="h-3.5 w-3.5" />
+          <span>Download</span>
+        </a>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl overflow-hidden border border-slate-200/90 bg-slate-900 max-w-lg shadow-sm group/video relative">
+      {!isPlaying ? (
+        <div
+          onClick={() => {
+            setIsPlaying(true);
+            setTimeout(() => {
+              if (videoRef.current) {
+                videoRef.current.play().catch(() => setHasError(true));
+              }
+            }, 60);
+          }}
+          className="relative h-48 sm:h-56 w-full cursor-pointer bg-gradient-to-tr from-slate-900 via-indigo-950/80 to-slate-900 flex items-center justify-center group/play overflow-hidden"
+        >
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-indigo-500/20 via-transparent to-transparent" />
+
+          {/* Large Centered Play Button (Matching Image 3) */}
+          <div className="relative z-10 flex h-14 w-14 items-center justify-center rounded-full bg-indigo-600 text-white shadow-xl shadow-indigo-600/40 ring-4 ring-white/20 transition-all duration-200 group-hover/play:scale-110 group-hover/play:bg-indigo-500">
+            <Play className="h-6 w-6 ml-0.5 fill-white text-white" />
+          </div>
+
+          {/* Bottom metadata overlay (Matching Image 3) */}
+          <div className="absolute inset-x-0 bottom-0 p-3 bg-gradient-to-t from-slate-950/90 via-slate-950/60 to-transparent flex items-center justify-between text-white text-xs">
+            <div className="flex items-center gap-2 truncate mr-2">
+              <Film className="h-4 w-4 text-indigo-400 shrink-0" />
+              <span className="font-bold truncate text-white">{att.fileName}</span>
+              <span className="text-[11px] text-slate-300 font-mono shrink-0">
+                {formatFileSize(att.fileSize)}
+              </span>
+            </div>
+            <span className="px-2 py-0.5 rounded-md bg-black/60 backdrop-blur-xs text-[10px] font-mono text-slate-200 font-bold shrink-0">
+              Video
+            </span>
+          </div>
+        </div>
+      ) : (
+        <div className="relative bg-black">
+          <video
+            ref={videoRef}
+            src={fullUrl}
+            controls
+            autoPlay
+            playsInline
+            onError={() => setHasError(true)}
+            className="max-h-72 w-full object-contain bg-black"
+          />
+        </div>
+      )}
+
+      {/* Footer bar with file info and download */}
+      <div className="p-2.5 bg-slate-900/95 text-white flex items-center justify-between text-xs border-t border-slate-800">
+        <div className="flex items-center gap-2 truncate mr-2">
+          <Film className="h-4 w-4 text-indigo-400 shrink-0" />
+          <span className="font-bold truncate text-slate-100">{att.fileName}</span>
+          <span className="text-[10px] text-slate-400 font-mono shrink-0">
+            ({formatFileSize(att.fileSize)})
+          </span>
+        </div>
+        <a
+          href={downloadUrl}
+          download={att.fileName}
+          className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-300 hover:text-white transition-colors shrink-0"
+          title="Download video"
+        >
+          <Download className="h-4 w-4" />
+        </a>
+      </div>
+    </div>
+  );
+}
+
 function WorkspaceShellContent() {
   const params = useParams();
   const router = useRouter();
@@ -259,6 +375,7 @@ function WorkspaceShellContent() {
   const [isStarred, setIsStarred] = useState(false);
   const [huddleActive, setHuddleActive] = useState(false);
   const [showWorkspaceSwitcher, setShowWorkspaceSwitcher] = useState(false);
+  const [showHeaderMoreMenu, setShowHeaderMoreMenu] = useState(false);
 
   // Module 7: Pinned Messages State
   const [pinnedMessages, setPinnedMessages] = useState<(Message | DirectMessage)[]>([]);
@@ -3336,7 +3453,7 @@ function WorkspaceShellContent() {
   }
 
   // File Upload Helpers (Supports any file type and multi-GB file uploads)
-  function formatFileSize(bytes: number) {
+  function formatFileSize(bytes?: number) {
     if (!bytes || bytes === 0) return '0 B';
     const k = 1024;
     const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
@@ -4189,34 +4306,13 @@ function WorkspaceShellContent() {
 
           if (category === 'video') {
             return (
-              <div
+              <VideoAttachmentCard
                 key={idx}
-                className="rounded-2xl overflow-hidden border border-slate-200/90 bg-slate-900 max-w-md shadow-sm group/video"
-              >
-                <video
-                  src={fullUrl}
-                  controls
-                  preload="metadata"
-                  className="max-h-72 w-full object-contain bg-black"
-                />
-                <div className="p-2.5 bg-slate-900/95 text-white flex items-center justify-between text-xs border-t border-slate-800">
-                  <div className="flex items-center gap-2 truncate mr-2">
-                    <Film className="h-4 w-4 text-indigo-400 shrink-0" />
-                    <span className="font-bold truncate text-slate-100">{att.fileName}</span>
-                    <span className="text-[10px] text-slate-400 font-mono shrink-0">
-                      ({formatFileSize(att.fileSize)})
-                    </span>
-                  </div>
-                  <a
-                    href={downloadUrl}
-                    download={att.fileName}
-                    className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-300 hover:text-white transition-colors shrink-0"
-                    title="Download video"
-                  >
-                    <Download className="h-4 w-4" />
-                  </a>
-                </div>
-              </div>
+                att={att}
+                fullUrl={fullUrl}
+                downloadUrl={downloadUrl}
+                formatFileSize={formatFileSize}
+              />
             );
           }
 
@@ -4373,7 +4469,7 @@ function WorkspaceShellContent() {
   );
 
   return (
-    <div className="h-screen w-screen flex overflow-hidden bg-[#F8FAFC] text-slate-900 antialiased font-sans select-none relative">
+    <div className="h-screen w-screen flex flex-col overflow-hidden bg-[#F4F5FA] text-slate-900 antialiased font-sans select-none relative">
       {/* Permanent, Always-Mounted Audio Output Element (never unmounts across call transitions) */}
       <audio
         ref={remoteAudioRef}
@@ -4391,26 +4487,114 @@ function WorkspaceShellContent() {
       )}
 
       {/* ─────────────────────────────────────────────────────────────
-          1. UNIFIED STUDIO NAVIGATION SIDEBAR (Linear / Notion caliber)
+          GLOBAL TOP BAR (Image 3 Caliber)
       ───────────────────────────────────────────────────────────── */}
-      <aside
-        className={`fixed inset-y-0 left-0 z-40 w-72 bg-white flex flex-col shrink-0 border-r border-slate-200/80 shadow-2xl md:shadow-[2px_0_12px_rgba(0,0,0,0.02)] md:static md:translate-x-0 transition-transform duration-300 ease-in-out select-none ${
-          showMobileSidebar ? 'translate-x-0' : '-translate-x-full'
-        }`}
-      >
-        {/* Official Patterns Brand Logo Header */}
-        <div className="px-4 py-3 flex items-center justify-between border-b border-slate-100 bg-white">
-          <Link href="/workspaces" className="flex items-center gap-2 group">
+      <header className="h-14 sm:h-16 w-full bg-white border-b border-slate-200/80 px-4 sm:px-6 flex items-center justify-between shrink-0 z-20 shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
+        {/* Left: Mobile Toggle & Patterns Logo */}
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setShowMobileSidebar(true)}
+            className="p-2 -ml-1 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl md:hidden transition-colors"
+            title="Open navigation"
+          >
+            <Menu className="h-5 w-5" />
+          </button>
+          <Link href="/workspaces" className="flex items-center gap-2.5 group">
             <img
               src="/patterns-logo.png"
               alt="Patterns"
-              className="h-8 w-auto object-contain transition-transform group-hover:scale-105"
+              className="h-7 sm:h-8 w-auto object-contain transition-transform group-hover:scale-105"
             />
           </Link>
-          <span className="text-[10px] font-bold tracking-wider text-slate-400 uppercase bg-slate-50 px-2 py-0.5 rounded-md border border-slate-200/60">
-            Workspace
-          </span>
         </div>
+
+        {/* Center: Global Spotlight Search Bar */}
+        <div className="flex-1 max-w-xl mx-4 hidden sm:block">
+          <button
+            type="button"
+            onClick={() => setShowSearchModal(true)}
+            className="w-full flex items-center justify-between px-3.5 py-2 rounded-xl bg-slate-50 hover:bg-white border border-slate-200 hover:border-indigo-300 text-xs text-slate-400 hover:text-slate-700 transition-all shadow-subtle group"
+          >
+            <div className="flex items-center gap-2.5 truncate">
+              <Search className="h-4 w-4 text-slate-400 group-hover:text-indigo-600 transition-colors shrink-0" />
+              <span className="truncate text-slate-500 font-medium">Search anything, messages, files, or people...</span>
+            </div>
+            <kbd className="font-mono text-[10px] bg-white border border-slate-200 px-1.5 py-0.5 rounded text-slate-400 group-hover:text-indigo-600 group-hover:border-indigo-200 font-bold shadow-2xs shrink-0">
+              ⌘ K
+            </kbd>
+          </button>
+        </div>
+
+        {/* Right: Notifications, Help, User Avatar */}
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => setShowSearchModal(true)}
+            className="p-2 rounded-full hover:bg-slate-100 text-slate-600 hover:text-slate-900 sm:hidden transition-colors"
+            title="Search workspace"
+          >
+            <Search className="h-5 w-5" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowNotificationDrawer(true)}
+            className="relative p-2 rounded-full hover:bg-slate-100 text-slate-600 hover:text-slate-900 transition-colors"
+            title="Activity & Notifications"
+          >
+            <Bell className="h-5 w-5" />
+            {unreadNotificationCount > 0 && (
+              <span className="absolute top-1.5 right-1.5 flex h-2.5 w-2.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-rose-500 ring-2 ring-white" />
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowCommandPalette(true)}
+            className="p-2 rounded-full hover:bg-slate-100 text-slate-600 hover:text-slate-900 transition-colors"
+            title="Help & Shortcuts (⌘K)"
+          >
+            <HelpCircle className="h-5 w-5" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowPresenceMenu(!showPresenceMenu)}
+            className="relative ml-1 flex items-center justify-center h-8 w-8 sm:h-9 sm:w-9 rounded-full ring-2 ring-slate-200 hover:ring-indigo-400 transition-all overflow-hidden shrink-0"
+            title={`${user.name} (${userPresence})`}
+          >
+            <img
+              src={user.avatarUrl || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
+              alt={user.name}
+              className="h-full w-full object-cover"
+            />
+            <span
+              className={`absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full ring-2 ring-white ${
+                userPresence === 'AWAY'
+                  ? 'bg-amber-400'
+                  : userPresence === 'OFFLINE'
+                  ? 'bg-slate-300'
+                  : 'bg-emerald-500'
+              }`}
+            />
+          </button>
+        </div>
+      </header>
+
+      {/* ─────────────────────────────────────────────────────────────
+          MAIN CANVAS: FLOATING SIDEBAR & FLOATING CHAT CARD
+      ───────────────────────────────────────────────────────────── */}
+      <div className="flex-1 flex overflow-hidden p-2 sm:p-3 md:p-4 gap-2 sm:gap-3 md:gap-4 min-h-0 relative">
+        {/* Floating Left Sidebar (Image 3 Caliber) */}
+        <aside
+          className={`fixed inset-y-0 left-0 z-40 w-72 bg-white flex flex-col shrink-0 border-r border-slate-200 shadow-2xl md:shadow-xs md:border md:rounded-2xl md:static md:translate-x-0 transition-transform duration-300 ease-in-out select-none overflow-hidden ${
+            showMobileSidebar ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
+          }`}
+        >
 
         {/* Workspace Hub & Switcher Header */}
         <div className="p-3 border-b border-slate-100 relative">
@@ -4513,60 +4697,73 @@ function WorkspaceShellContent() {
           )}
         </div>
 
-        {/* Global Spotlight Search Trigger inside Sidebar */}
-        <div className="px-3 pt-3">
-          <button
-            onClick={() => setShowSearchModal(true)}
-            className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-slate-50 hover:bg-white border border-slate-200 hover:border-indigo-300 text-xs text-slate-500 hover:text-slate-800 transition-all shadow-subtle group"
+        {/* Navigation Items (Image 3 Caliber) */}
+        <div className="px-3 py-2 space-y-1 border-b border-slate-100">
+          <Link
+            href="/workspaces"
+            className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors"
           >
-            <div className="flex items-center gap-2 truncate">
-              <Search className="h-3.5 w-3.5 text-slate-400 group-hover:text-indigo-600 transition-colors shrink-0" />
-              <span className="truncate font-medium">Search workspace...</span>
+            <Home className="h-4 w-4 text-slate-400" />
+            <span>Home</span>
+          </Link>
+
+          <button
+            type="button"
+            onClick={() => {
+              setShowCalendarView(false);
+              setShowMobileSidebar(false);
+            }}
+            className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-bold transition-all ${
+              !showCalendarView
+                ? 'bg-indigo-50/90 text-indigo-700 shadow-2xs'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+            }`}
+          >
+            <div className="flex items-center gap-3">
+              <MessageSquare className={`h-4 w-4 ${!showCalendarView ? 'text-indigo-600' : 'text-slate-400'}`} />
+              <span>Chat</span>
             </div>
-            <kbd className="font-mono text-[10px] bg-white border border-slate-200 px-1.5 py-0.5 rounded text-slate-400 group-hover:text-indigo-600 group-hover:border-indigo-200 font-bold shadow-2xs shrink-0">
-              ⌘K
-            </kbd>
+            {totalUnreadCount > 0 && (
+              <span className="flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-indigo-600 text-[10px] font-black text-white shadow-xs">
+                {totalUnreadCount}
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setShowCalendarView(true);
+              setActiveThreadParent(null);
+              setShowMobileSidebar(false);
+            }}
+            className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold transition-all ${
+              showCalendarView
+                ? 'bg-indigo-50/90 text-indigo-700 shadow-2xs font-bold'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+            }`}
+          >
+            <div className="flex items-center gap-3">
+              <Calendar className={`h-4 w-4 ${showCalendarView ? 'text-indigo-600' : 'text-slate-400'}`} />
+              <span>Calendar & Meetings</span>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              loadWorkspaceRecordings();
+              setShowRecordingsModal(true);
+            }}
+            className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors"
+          >
+            <Folder className="h-4 w-4 text-slate-400" />
+            <span>Files</span>
           </button>
         </div>
 
         {/* Scrollable Navigation Sections */}
-        <div className="flex-1 overflow-y-auto px-3 py-4 space-y-5 no-scrollbar text-xs">
-          {/* Quick Smart Views */}
-          <div className="space-y-0.5">
-            <button
-              onClick={() => setShowCommandPalette(true)}
-              className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl text-slate-600 hover:text-slate-900 hover:bg-slate-50 font-medium transition-all group"
-            >
-              <div className="flex items-center gap-2">
-                <Sparkles className="h-3.5 w-3.5 text-indigo-600 group-hover:scale-110 transition-transform" />
-                <span>Command Switcher</span>
-              </div>
-              <span className="text-[10px] font-mono text-slate-400 font-bold">⌘K</span>
-            </button>
-
-            {/* Calendar & Team Meetings */}
-            <button
-              onClick={() => {
-                setShowCalendarView(true);
-                setActiveThreadParent(null);
-                setShowMobileSidebar(false);
-              }}
-              className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl font-medium transition-all group ${
-                showCalendarView
-                  ? 'bg-indigo-50 text-indigo-700 font-semibold shadow-2xs border border-indigo-200/80'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <Calendar className={`h-3.5 w-3.5 ${showCalendarView ? 'text-indigo-600' : 'text-slate-400 group-hover:text-indigo-600'} transition-colors`} />
-                <span>Calendar & Meetings</span>
-              </div>
-              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-indigo-100/80 text-indigo-700">
-                Teams
-              </span>
-            </button>
-          </div>
-
+        <div className="flex-1 overflow-y-auto px-3 py-3 space-y-4 no-scrollbar text-xs">
           {/* SPACES & CHANNELS */}
           <div>
             <div className="flex items-center justify-between px-2 py-1 text-slate-400 hover:text-slate-700 group">
@@ -4579,7 +4776,7 @@ function WorkspaceShellContent() {
                     channelsCollapsed ? '-rotate-90' : ''
                   }`}
                 />
-                <span>Channels ({channels.length})</span>
+                <span>CHANNELS ({channels.length})</span>
                 {totalUnreadChannels > 0 && channelsCollapsed && (
                   <span className="ml-1 px-1.5 py-0.5 rounded-full bg-indigo-600 text-[9px] font-bold text-white shadow-2xs">
                     {totalUnreadChannels}
@@ -4972,9 +5169,9 @@ function WorkspaceShellContent() {
       {/* ─────────────────────────────────────────────────────────────
           2. FOCUSED CHAT WORKSPACE & CANVAS
       ───────────────────────────────────────────────────────────── */}
-      <main className="flex-1 flex flex-col bg-[#FAFBFC] min-w-0 text-slate-900 relative overflow-hidden">
-        {/* Unified Canvas Header (Channel/DM Context + Live Controls - Always 1 single row) */}
-        <header className="h-16 px-3 sm:px-6 border-b border-slate-200/80 bg-white/90 backdrop-blur-xl flex items-center justify-between shrink-0 z-10 shadow-[0_1px_3px_rgba(0,0,0,0.02)] flex-nowrap whitespace-nowrap overflow-x-auto no-scrollbar gap-2 sm:gap-4">
+      <main className="flex-1 bg-white rounded-2xl md:rounded-3xl border border-slate-200/80 shadow-xs flex flex-col min-w-0 text-slate-900 relative overflow-hidden">
+        {/* Spacious & Responsive Chat Header (Image 3 Caliber) */}
+        <header className="h-16 px-4 sm:px-6 border-b border-slate-100 flex items-center justify-between shrink-0 z-10 bg-white">
           {/* Mobile hamburger menu button */}
           <button
             type="button"
@@ -5119,14 +5316,14 @@ function WorkspaceShellContent() {
             </div>
           )}
 
-          {/* Header Right Actions & Live Controls - Always 1 single row */}
+          {/* Header Right Actions & Live Controls (Image 3 Caliber) */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {/* Back to Chat button when viewing Calendar */}
             {showCalendarView && (
               <button
                 type="button"
                 onClick={() => setShowCalendarView(false)}
-                className="flex items-center gap-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-1.5 text-xs font-semibold transition-all shadow-subtle shrink-0"
+                className="flex items-center gap-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-1.5 text-xs font-semibold transition-all shrink-0"
               >
                 <X className="h-3.5 w-3.5" />
                 <span>Back to Chat</span>
@@ -5139,7 +5336,7 @@ function WorkspaceShellContent() {
                 <button
                   type="button"
                   onClick={() => handleStartCall(activeRecipient, false)}
-                  className="flex items-center gap-1.5 rounded-xl bg-white border border-slate-200/80 hover:bg-emerald-50 hover:border-emerald-300 hover:text-emerald-700 p-2 sm:px-3 sm:py-1.5 text-xs font-semibold text-slate-700 transition-all shadow-subtle shrink-0 whitespace-nowrap"
+                  className="flex items-center gap-1.5 rounded-xl bg-white border border-slate-200 hover:bg-emerald-50 hover:border-emerald-300 hover:text-emerald-700 px-3 py-1.5 text-xs font-semibold text-slate-700 transition-all shrink-0"
                   title={`Start voice call with ${activeRecipient.name}`}
                 >
                   <Phone className="h-4 w-4 text-emerald-600 shrink-0" />
@@ -5148,7 +5345,7 @@ function WorkspaceShellContent() {
                 <button
                   type="button"
                   onClick={() => handleStartCall(activeRecipient, true)}
-                  className="flex items-center gap-1.5 rounded-xl bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 hover:border-indigo-300 text-indigo-700 p-2 sm:px-3 sm:py-1.5 text-xs font-bold transition-all shadow-subtle shrink-0 whitespace-nowrap"
+                  className="flex items-center gap-1.5 rounded-xl bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 hover:border-indigo-300 text-indigo-700 px-3 py-1.5 text-xs font-bold transition-all shrink-0"
                   title={`Start video call with ${activeRecipient.name}`}
                 >
                   <Video className="h-4 w-4 text-indigo-600 shrink-0" />
@@ -5157,7 +5354,7 @@ function WorkspaceShellContent() {
               </>
             )}
 
-            {/* Instant Team Meeting Button (Zoom/Teams style for 3-16+ people) */}
+            {/* Instant Team Meeting Button */}
             {!activeRecipient && !showCalendarView && activeChannel && (
               <button
                 type="button"
@@ -5186,10 +5383,10 @@ function WorkspaceShellContent() {
                   };
                   setActiveTeamMeeting(instantMeeting);
                 }}
-                className="flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white p-2 sm:px-3 sm:py-1.5 text-xs font-bold transition-all shadow-md shadow-indigo-600/20 shrink-0 whitespace-nowrap active:scale-95"
-                title="Start or join Zoom/Teams style multi-party video meeting"
+                className="flex items-center gap-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 text-xs font-semibold transition-all shadow-xs shrink-0 active:scale-95"
+                title="Start or join Team Video Meeting"
               >
-                <Users className="h-4 w-4 shrink-0 text-white" />
+                <Video className="h-4 w-4 shrink-0" />
                 <span className="hidden sm:inline">Team Meeting</span>
               </button>
             )}
@@ -5197,39 +5394,34 @@ function WorkspaceShellContent() {
             {/* Audio Huddle Button with Live Waves */}
             {!activeRecipient && !showCalendarView && (
               <button
+                type="button"
                 onClick={() => setHuddleActive(!huddleActive)}
-              className={`flex items-center gap-1.5 sm:gap-2 rounded-xl p-2 sm:px-3 sm:py-1.5 text-xs font-bold border transition-all shadow-subtle shrink-0 whitespace-nowrap ${
-                huddleActive
-                  ? 'bg-emerald-50 text-emerald-700 border-emerald-300 shadow-xs'
-                  : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200/80 hover:border-slate-300'
-              }`}
-              title="Toggle Audio Huddle"
-            >
-              <Headphones className={`h-3.5 w-3.5 ${huddleActive ? 'text-emerald-600' : 'text-indigo-600'} shrink-0`} />
-              <span className="hidden sm:inline">{huddleActive ? 'Huddle Live' : 'Start Huddle'}</span>
-              {huddleActive && (
-                <span className="flex items-center gap-0.5 ml-1">
+                className={`flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold border transition-all shrink-0 ${
+                  huddleActive
+                    ? 'bg-emerald-50 text-emerald-700 border-emerald-300 shadow-xs'
+                    : 'bg-emerald-50/70 hover:bg-emerald-100/80 text-emerald-700 border-emerald-200'
+                }`}
+                title="Toggle Audio Huddle"
+              >
+                <Radio className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                <span className="hidden sm:inline">{huddleActive ? 'Huddle Live' : 'Start Huddle'}</span>
+                <span className="flex items-center gap-0.5 ml-0.5">
                   <span className="h-2 w-0.5 bg-emerald-500 animate-pulse" />
                   <span className="h-3 w-0.5 bg-emerald-500 animate-pulse delay-75" />
                   <span className="h-1.5 w-0.5 bg-emerald-500 animate-pulse delay-150" />
                 </span>
-              )}
-            </button>
-          )}
+              </button>
+            )}
 
             {/* Pinned Messages Button */}
             <button
+              type="button"
               onClick={handleLoadPinnedMessages}
-              className="flex items-center gap-1.5 rounded-xl bg-white border border-slate-200/80 hover:border-amber-300 hover:bg-amber-50/50 p-2 sm:px-3 sm:py-1.5 text-xs font-semibold text-slate-700 hover:text-amber-800 transition-all shadow-subtle shrink-0 whitespace-nowrap"
+              className="flex items-center gap-1.5 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700 transition-all shrink-0"
               title="View pinned messages"
             >
               <Pin className="h-3.5 w-3.5 text-amber-500 fill-amber-400 shrink-0" />
-              <span className="hidden sm:inline">
-                {activeRecipient
-                  ? directMessages.filter((m) => m.isPinned).length
-                  : messages.filter((m) => m.isPinned).length}{' '}
-                Pinned
-              </span>
+              <span className="hidden md:inline">Pinned</span>
             </button>
 
             {/* Call Recordings Database Button */}
@@ -5239,11 +5431,11 @@ function WorkspaceShellContent() {
                 loadWorkspaceRecordings();
                 setShowRecordingsModal(true);
               }}
-              className="flex items-center gap-1.5 rounded-xl bg-white border border-slate-200/80 hover:border-rose-300 hover:bg-rose-50/50 p-2 sm:px-3 sm:py-1.5 text-xs font-semibold text-slate-700 hover:text-rose-800 transition-all shadow-subtle shrink-0 whitespace-nowrap"
-              title="View saved call recordings"
+              className="flex items-center gap-1.5 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700 transition-all shrink-0"
+              title="View saved recordings"
             >
               <Disc className="h-3.5 w-3.5 text-rose-500 shrink-0" />
-              <span className="hidden sm:inline">Recordings</span>
+              <span className="hidden md:inline">Recordings</span>
               {workspaceRecordings.length > 0 && (
                 <span className="ml-0.5 px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-rose-100 text-rose-700">
                   {workspaceRecordings.length}
@@ -5251,92 +5443,103 @@ function WorkspaceShellContent() {
               )}
             </button>
 
+            {/* Add People Button */}
             {!activeRecipient && activeChannel && canInviteMembers(currentUserRole) && (
               <button
+                type="button"
                 onClick={() => {
                   setSelectedAddUserIds([]);
                   setAddMemberSearchQuery('');
                   setShowAddChannelMemberModal(true);
                 }}
-                className="flex items-center gap-1.5 rounded-xl bg-indigo-50 border border-indigo-200 hover:bg-indigo-100/80 hover:border-indigo-300 p-2 sm:px-3 sm:py-1.5 text-xs font-bold text-indigo-700 transition-all shadow-subtle shrink-0 whitespace-nowrap"
+                className="flex items-center gap-1.5 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700 transition-all shrink-0"
                 title="Add people to this channel"
               >
-                <UserPlus className="h-3.5 w-3.5 shrink-0" />
-                <span className="hidden sm:inline">Add People</span>
+                <UserPlus className="h-3.5 w-3.5 text-slate-600 shrink-0" />
+                <span className="hidden md:inline">Add People</span>
               </button>
             )}
 
-            <button
-              onClick={() => {
-                setChannelMembersTab('channel');
-                setShowMembersDrawer(!showMembersDrawer);
-              }}
-              className="flex items-center gap-1.5 sm:gap-2 rounded-xl bg-white border border-slate-200/80 hover:bg-slate-50 p-2 sm:px-3 sm:py-1.5 text-xs font-semibold text-slate-700 transition-all shadow-subtle shrink-0 whitespace-nowrap"
-              title="View channel members"
-            >
-              <div className="flex -space-x-1.5 overflow-hidden shrink-0">
-                {(activeRecipient
-                  ? members
-                  : !activeChannel?.isPrivate
-                  ? members
-                  : activeChannelMembers.length > 0
-                  ? activeChannelMembers
-                  : members
-                )
-                  .slice(0, 4)
-                  .map((m: any, idx: number) => (
-                    <img
-                      key={idx}
-                      className="inline-block h-5 w-5 rounded-md ring-1 ring-white object-cover"
-                      src={m.user?.avatarUrl || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
-                      alt={m.user?.name || 'Member'}
-                    />
-                  ))}
-              </div>
-              <span className="hidden sm:inline">
-                {activeRecipient
-                  ? `${members.length} ${members.length === 1 ? 'member' : 'members'}`
-                  : !activeChannel?.isPrivate
-                  ? `${members.length} ${members.length === 1 ? 'member' : 'members'}`
-                  : `${activeChannelMembers.length || members.length} ${
-                      (activeChannelMembers.length || members.length) === 1 ? 'member' : 'members'
-                    }`}
-              </span>
-            </button>
+            {/* More actions menu (•••) */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowHeaderMoreMenu(!showHeaderMoreMenu)}
+                className="p-2 rounded-xl border border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors"
+                title="More options"
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </button>
 
-            <span className="h-4 w-[1px] bg-slate-200 shrink-0" />
+              {showHeaderMoreMenu && (
+                <div className="absolute right-0 top-full mt-1.5 w-56 rounded-2xl bg-white border border-slate-200 shadow-xl p-2 z-50 animate-in fade-in zoom-in-95 duration-150">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setChannelMembersTab('channel');
+                      setShowMembersDrawer(true);
+                      setShowHeaderMoreMenu(false);
+                    }}
+                    className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Users className="h-4 w-4 text-indigo-600" />
+                      <span>Channel Members</span>
+                    </div>
+                    <span className="text-[10px] font-mono text-slate-400">
+                      {activeRecipient ? members.length : (activeChannelMembers.length || members.length)}
+                    </span>
+                  </button>
 
-            {/* Audio Sound Toggle */}
-            <button
-              onClick={() => setSoundEnabled(!soundEnabled)}
-              className={`p-2 rounded-xl border text-xs transition-all shadow-subtle shrink-0 ${
-                soundEnabled
-                  ? 'bg-slate-100/80 hover:bg-slate-200/70 border-slate-200/80 text-slate-600 hover:text-slate-900'
-                  : 'bg-rose-50 border-rose-200 text-rose-500'
-              }`}
-              title={soundEnabled ? 'Chime sound enabled (Click to mute)' : 'Chime sound muted (Click to enable)'}
-            >
-              {soundEnabled ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
-            </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSoundEnabled(!soundEnabled);
+                      setShowHeaderMoreMenu(false);
+                    }}
+                    className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      {soundEnabled ? (
+                        <Volume2 className="h-4 w-4 text-emerald-600" />
+                      ) : (
+                        <VolumeX className="h-4 w-4 text-rose-500" />
+                      )}
+                      <span>Sound Chimes</span>
+                    </div>
+                    <span className={`text-[10px] font-bold ${soundEnabled ? 'text-emerald-600' : 'text-slate-400'}`}>
+                      {soundEnabled ? 'ON' : 'MUTED'}
+                    </span>
+                  </button>
 
-            {/* Notifications Center Bell */}
-            <button
-              onClick={() => setShowNotificationDrawer(true)}
-              className="relative p-2 hover:bg-slate-100/80 rounded-xl border border-slate-200/80 text-slate-600 hover:text-indigo-600 transition-all shadow-subtle shrink-0"
-              title="Activity & Notifications"
-            >
-              <Bell className="h-4 w-4" />
-              {unreadNotificationCount > 0 && (
-                <span className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-black text-white ring-2 ring-white animate-pulse">
-                  {unreadNotificationCount > 9 ? '9+' : unreadNotificationCount}
-                </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsStarred(!isStarred);
+                      setShowHeaderMoreMenu(false);
+                    }}
+                    className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Star className={`h-4 w-4 ${isStarred ? 'fill-amber-400 text-amber-500' : 'text-slate-400'}`} />
+                      <span>Star Channel</span>
+                    </div>
+                    <span className="text-[10px] text-slate-400">
+                      {isStarred ? 'Starred' : 'Unstarred'}
+                    </span>
+                  </button>
+
+                  <div className="my-1 border-t border-slate-100" />
+
+                  <div className="px-3 py-1.5 flex items-center justify-between text-xs text-slate-500">
+                    <span className="flex items-center gap-1.5">
+                      <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                      <span className="text-[11px] font-semibold text-emerald-700">Live Sync Active</span>
+                    </span>
+                    <span className="text-[10px] font-mono text-slate-400">WebRTC</span>
+                  </div>
+                </div>
               )}
-            </button>
-
-            {/* Live Sync Status Pill */}
-            <div className="flex items-center gap-1.5 rounded-full bg-emerald-50/90 border border-emerald-200/80 px-3 py-1 text-[11px] font-bold text-emerald-700 shadow-subtle shrink-0 whitespace-nowrap">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-              <span>Live Sync</span>
             </div>
           </div>
         </header>
@@ -5432,10 +5635,34 @@ function WorkspaceShellContent() {
 
                       const groupedDMReactions = groupReactions(msg.reactions);
 
+                      const msgDate = new Date(msg.createdAt).toLocaleDateString('en-US', {
+                        month: 'short',
+                        day: 'numeric',
+                        year: 'numeric',
+                      });
+                      const prevDate = prevMsg
+                        ? new Date(prevMsg.createdAt).toLocaleDateString('en-US', {
+                            month: 'short',
+                            day: 'numeric',
+                            year: 'numeric',
+                          })
+                        : null;
+                      const showDateDivider = !prevDate || msgDate !== prevDate;
+
                       return (
-                        <div
-                          key={msg.id}
-                          id={`msg-${msg.id}`}
+                        <React.Fragment key={msg.id}>
+                          {showDateDivider && (
+                            <div className="relative flex items-center justify-center my-6 select-none">
+                              <div className="absolute inset-0 flex items-center">
+                                <div className="w-full border-t border-slate-200/80" />
+                              </div>
+                              <div className="relative px-3.5 py-0.5 bg-white border border-slate-200/70 rounded-full text-[11px] font-semibold text-slate-400 tracking-wide shadow-2xs">
+                                {msgDate}
+                              </div>
+                            </div>
+                          )}
+                          <div
+                            id={`msg-${msg.id}`}
                           onMouseEnter={() => setHoveredMessageId(msg.id)}
                           onMouseLeave={() => setHoveredMessageId(null)}
                           className={`group relative flex items-start gap-3.5 rounded-2xl px-4 py-2 -mx-2 hover:bg-slate-50/90 transition-all ${
@@ -5641,7 +5868,8 @@ function WorkspaceShellContent() {
                             )}
                           </div>
                         </div>
-                      );
+                      </React.Fragment>
+                    );
                     })
                   )}
 
@@ -5789,56 +6017,25 @@ function WorkspaceShellContent() {
                       </div>
                     )}
 
-                    <div className="flex items-center gap-1 px-3.5 py-1.5 border-b border-slate-100 bg-slate-50/80 text-slate-500 text-xs">
-                      <button
-                        type="button"
-                        onClick={() => setInputText((prev) => prev + '**bold text**')}
-                        className="p-1 hover:bg-slate-200/70 rounded-lg text-slate-700 transition-colors"
-                        title="Bold"
-                      >
-                        <Bold className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setInputText((prev) => prev + '*italic text*')}
-                        className="p-1 hover:bg-slate-200/70 rounded-lg text-slate-700 transition-colors"
-                        title="Italic"
-                      >
-                        <Italic className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setInputText((prev) => prev + '\n```\n// code snippet\n```\n')}
-                        className="p-1 hover:bg-slate-200/70 rounded-lg text-slate-700 transition-colors"
-                        title="Code Block"
-                      >
-                        <Code className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-
-                    <textarea
-                      value={inputText}
-                      onChange={(e) => handleInputChange(e, 'dm')}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey) {
-                          e.preventDefault();
-                          handleSendDirectMessage();
-                        }
-                      }}
-                      placeholder={`Direct message ${activeRecipient.name}... (Enter to send, Shift+Enter for new line)`}
-                      rows={2}
-                      className="w-full resize-none px-4 py-3 text-[14px] text-slate-900 placeholder:text-slate-400 bg-transparent focus:outline-none"
-                    />
-
-                    <div className="flex items-center justify-between px-3.5 py-2 border-t border-slate-100 bg-slate-50/40">
-                      <div className="flex items-center gap-1.5 text-slate-500">
+                    {/* Unified DM Composer Bar (Image 3 Caliber) */}
+                    <div className="flex items-center gap-2 px-3 py-2 sm:px-4 sm:py-2.5">
+                      {/* Left Actions: Smile, Paperclip, AtSign */}
+                      <div className="flex items-center gap-1 text-slate-400 shrink-0">
                         <button
                           type="button"
                           onClick={() => setInputText((prev) => prev + ' 👋')}
-                          className="p-1.5 hover:bg-slate-200/70 rounded-lg hover:text-slate-800 transition-colors"
+                          className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-slate-600 transition-colors"
                           title="Say wave"
                         >
-                          <Smile className="h-4 w-4" />
+                          <Smile className="h-5 w-5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => dmFileInputRef.current?.click()}
+                          className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-slate-600 transition-colors"
+                          title="Attach File or Image"
+                        >
+                          <Paperclip className="h-5 w-5" />
                         </button>
                         <button
                           type="button"
@@ -5847,38 +6044,42 @@ function WorkspaceShellContent() {
                             setMentionType('user');
                             setMentionTarget('dm');
                           }}
-                          className="p-1.5 hover:bg-slate-200/70 rounded-lg hover:text-slate-800 transition-colors"
+                          className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-slate-600 transition-colors"
                           title="Mention someone"
                         >
-                          <AtSign className="h-4 w-4" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => dmFileInputRef.current?.click()}
-                          className="p-1.5 hover:bg-slate-200/70 rounded-lg hover:text-slate-800 transition-colors"
-                          title="Attach File or Image"
-                        >
-                          <Paperclip className="h-4 w-4" />
+                          <AtSign className="h-5 w-5" />
                         </button>
                       </div>
 
-                      <div className="flex items-center gap-2.5">
-                        <span className="text-[11px] text-slate-400 hidden sm:inline">
-                          Return to send
-                        </span>
-                        <button
-                          type="submit"
-                          disabled={isSending || (!inputText.trim() && pendingDMAttachments.length === 0)}
-                          className={`flex h-8 w-8 items-center justify-center rounded-xl transition-all ${
-                            inputText.trim() || pendingDMAttachments.length > 0
-                              ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-md shadow-indigo-600/25 hover:scale-105 active:scale-95'
-                              : 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                          }`}
-                          title="Send Message"
-                        >
-                          <Send className="h-4 w-4" />
-                        </button>
-                      </div>
+                      {/* Composer Textarea */}
+                      <textarea
+                        value={inputText}
+                        onChange={(e) => handleInputChange(e, 'dm')}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            handleSendDirectMessage();
+                          }
+                        }}
+                        placeholder={`Direct message ${activeRecipient.name}... (Enter to send, Shift+Enter for new line)`}
+                        rows={1}
+                        className="flex-1 resize-none py-1.5 px-2 text-sm text-slate-900 placeholder:text-slate-400 bg-transparent focus:outline-none max-h-32 min-h-[28px]"
+                      />
+
+                      {/* Right: Solid Send Button (Image 3 Caliber) */}
+                      <button
+                        type="submit"
+                        disabled={isSending || (!inputText.trim() && pendingDMAttachments.length === 0)}
+                        className={`px-4 sm:px-5 py-2 rounded-xl font-semibold text-xs sm:text-sm flex items-center gap-2 transition-all shrink-0 shadow-sm ${
+                          inputText.trim() || pendingDMAttachments.length > 0
+                            ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-600/25 active:scale-95'
+                            : 'bg-indigo-300 text-white cursor-not-allowed opacity-70'
+                        }`}
+                        title="Send Message"
+                      >
+                        <Send className="h-4 w-4" />
+                        <span className="hidden sm:inline">Send</span>
+                      </button>
                     </div>
                   </form>
                 </div>
@@ -5969,10 +6170,34 @@ function WorkspaceShellContent() {
                         )
                       );
 
+                      const msgDate = new Date(msg.createdAt).toLocaleDateString('en-US', {
+                        month: 'short',
+                        day: 'numeric',
+                        year: 'numeric',
+                      });
+                      const prevDate = prevMsg
+                        ? new Date(prevMsg.createdAt).toLocaleDateString('en-US', {
+                            month: 'short',
+                            day: 'numeric',
+                            year: 'numeric',
+                          })
+                        : null;
+                      const showDateDivider = !prevDate || msgDate !== prevDate;
+
                       return (
-                        <div
-                          key={msg.id}
-                          id={`msg-${msg.id}`}
+                        <React.Fragment key={msg.id}>
+                          {showDateDivider && (
+                            <div className="relative flex items-center justify-center my-6 select-none">
+                              <div className="absolute inset-0 flex items-center">
+                                <div className="w-full border-t border-slate-200/80" />
+                              </div>
+                              <div className="relative px-3.5 py-0.5 bg-white border border-slate-200/70 rounded-full text-[11px] font-semibold text-slate-400 tracking-wide shadow-2xs">
+                                {msgDate}
+                              </div>
+                            </div>
+                          )}
+                          <div
+                            id={`msg-${msg.id}`}
                           onMouseEnter={() => setHoveredMessageId(msg.id)}
                           onMouseLeave={() => setHoveredMessageId(null)}
                           className={`group relative flex items-start gap-3.5 rounded-2xl px-4 py-2 -mx-2 hover:bg-slate-50/90 transition-all ${
@@ -6224,7 +6449,8 @@ function WorkspaceShellContent() {
                             )}
                           </div>
                         </div>
-                      );
+                      </React.Fragment>
+                    );
                     })
                   )}
 
@@ -6381,76 +6607,25 @@ function WorkspaceShellContent() {
                       </div>
                     )}
 
-                    {/* Formatting Toolbar */}
-                    <div className="flex items-center gap-1 px-3.5 py-1.5 border-b border-slate-100 bg-slate-50/80 text-slate-500 text-xs">
-                      <button
-                        type="button"
-                        onClick={() => setInputText((prev) => prev + '**bold text**')}
-                        className="p-1 hover:bg-slate-200/70 rounded-lg text-slate-700 transition-colors"
-                        title="Bold"
-                      >
-                        <Bold className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setInputText((prev) => prev + '*italic text*')}
-                        className="p-1 hover:bg-slate-200/70 rounded-lg text-slate-700 transition-colors"
-                        title="Italic"
-                      >
-                        <Italic className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setInputText((prev) => prev + '~~strikethrough~~')}
-                        className="p-1 hover:bg-slate-200/70 rounded-lg text-slate-700 transition-colors"
-                        title="Strikethrough"
-                      >
-                        <Strikethrough className="h-3.5 w-3.5" />
-                      </button>
-                      <span className="h-3.5 w-[1px] bg-slate-200 mx-1" />
-                      <button
-                        type="button"
-                        onClick={() => setInputText((prev) => prev + '\n```\n// code snippet\n```\n')}
-                        className="p-1 hover:bg-slate-200/70 rounded-lg text-slate-700 transition-colors"
-                        title="Code Block"
-                      >
-                        <Code className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setInputText((prev) => prev + '\n> Blockquote')}
-                        className="p-1 hover:bg-slate-200/70 rounded-lg text-slate-700 transition-colors"
-                        title="Quote"
-                      >
-                        <Quote className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-
-                    {/* Composer Textarea */}
-                    <textarea
-                      value={inputText}
-                      onChange={(e) => handleInputChange(e, 'channel')}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey) {
-                          e.preventDefault();
-                          handleSendMessage();
-                        }
-                      }}
-                      placeholder={`Message #${activeChannel?.name || 'channel'} (Enter to send, Shift+Enter for new line)...`}
-                      rows={2}
-                      className="w-full resize-none px-4 py-3 text-[14px] text-slate-900 placeholder:text-slate-400 bg-transparent focus:outline-none"
-                    />
-
-                    {/* Actions & Send Button */}
-                    <div className="flex items-center justify-between px-3.5 py-2 border-t border-slate-100 bg-slate-50/40">
-                      <div className="flex items-center gap-1.5 text-slate-500">
+                    {/* Unified Composer Bar (Image 3 Caliber) */}
+                    <div className="flex items-center gap-2 px-3 py-2 sm:px-4 sm:py-2.5">
+                      {/* Left Actions: Smile, Paperclip, AtSign */}
+                      <div className="flex items-center gap-1 text-slate-400 shrink-0">
                         <button
                           type="button"
-                          onClick={() => setInputText((prev) => prev + ' 👍')}
-                          className="p-1.5 hover:bg-slate-200/70 rounded-lg hover:text-slate-800 transition-colors"
+                          onClick={() => setInputText((prev) => prev + ' 😊')}
+                          className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-slate-600 transition-colors"
                           title="Add Emoji"
                         >
-                          <Smile className="h-4 w-4" />
+                          <Smile className="h-5 w-5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => channelFileInputRef.current?.click()}
+                          className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-slate-600 transition-colors"
+                          title="Attach File or Image"
+                        >
+                          <Paperclip className="h-5 w-5" />
                         </button>
                         <button
                           type="button"
@@ -6459,38 +6634,42 @@ function WorkspaceShellContent() {
                             setMentionType('user');
                             setMentionTarget('channel');
                           }}
-                          className="p-1.5 hover:bg-slate-200/70 rounded-lg hover:text-slate-800 transition-colors"
+                          className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-slate-600 transition-colors"
                           title="Mention someone"
                         >
-                          <AtSign className="h-4 w-4" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => channelFileInputRef.current?.click()}
-                          className="p-1.5 hover:bg-slate-200/70 rounded-lg hover:text-slate-800 transition-colors"
-                          title="Attach File or Image"
-                        >
-                          <Paperclip className="h-4 w-4" />
+                          <AtSign className="h-5 w-5" />
                         </button>
                       </div>
 
-                      <div className="flex items-center gap-2.5">
-                        <span className="text-[11px] text-slate-400 hidden sm:inline">
-                          Return to send
-                        </span>
-                        <button
-                          type="submit"
-                          disabled={isSending || (!inputText.trim() && pendingAttachments.length === 0)}
-                          className={`flex h-8 w-8 items-center justify-center rounded-xl transition-all ${
-                            inputText.trim() || pendingAttachments.length > 0
-                              ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-md shadow-indigo-600/25 hover:scale-105 active:scale-95'
-                              : 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                          }`}
-                          title="Send Message"
-                        >
-                          <Send className="h-4 w-4" />
-                        </button>
-                      </div>
+                      {/* Composer Textarea */}
+                      <textarea
+                        value={inputText}
+                        onChange={(e) => handleInputChange(e, 'channel')}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            handleSendMessage();
+                          }
+                        }}
+                        placeholder={`Message #${activeChannel?.name || 'general'} (Enter to send, Shift+Enter for new line)...`}
+                        rows={1}
+                        className="flex-1 resize-none py-1.5 px-2 text-sm text-slate-900 placeholder:text-slate-400 bg-transparent focus:outline-none max-h-32 min-h-[28px]"
+                      />
+
+                      {/* Right: Solid Send Button (Image 3 Caliber) */}
+                      <button
+                        type="submit"
+                        disabled={isSending || (!inputText.trim() && pendingAttachments.length === 0)}
+                        className={`px-4 sm:px-5 py-2 rounded-xl font-semibold text-xs sm:text-sm flex items-center gap-2 transition-all shrink-0 shadow-sm ${
+                          inputText.trim() || pendingAttachments.length > 0
+                            ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-600/25 active:scale-95'
+                            : 'bg-indigo-300 text-white cursor-not-allowed opacity-70'
+                        }`}
+                        title="Send Message"
+                      >
+                        <Send className="h-4 w-4" />
+                        <span className="hidden sm:inline">Send</span>
+                      </button>
                     </div>
                   </form>
                 </div>
@@ -7102,6 +7281,7 @@ function WorkspaceShellContent() {
             )}
           </div>
         </main>
+      </div>
 
       {/* ─────────────────────────────────────────────────────────────
           6. COMMAND PALETTE MODAL (⌘K Quick Switcher Light)
