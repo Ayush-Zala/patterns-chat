@@ -1,17 +1,20 @@
-import { Navbar } from '@/components/Navbar';
-import { Hero } from '@/components/Hero';
-import { Features } from '@/components/Features';
-import { Footer } from '@/components/Footer';
+'use client';
+
+import { useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { useAuth } from '@/lib/auth-context';
+import LoginPage from './login/page';
 
 export default function Home() {
-  return (
-    <div className="min-h-screen flex flex-col bg-white">
-      <Navbar />
-      <main className="flex-1">
-        <Hero />
-        <Features />
-      </main>
-      <Footer />
-    </div>
-  );
+  const router = useRouter();
+  const { user, loading } = useAuth();
+
+  useEffect(() => {
+    if (!loading && user) {
+      router.replace('/workspaces');
+    }
+  }, [user, loading, router]);
+
+  // Directly show the clean Patterns login page with instant response and zero marketing fluff
+  return <LoginPage />;
 }

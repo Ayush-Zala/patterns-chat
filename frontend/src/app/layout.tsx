@@ -14,9 +14,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'TeamFlow — Modern Slack-Type Team Communication Platform',
+  title: 'Patterns — Quality. Delivered. | Team Collaboration & Chat',
   description:
-    'TeamFlow is a modular, high-performance team collaboration platform with channels, threads, real-time messaging, and workspace productivity.',
+    'Patterns is a modern, high-performance team collaboration platform with channels, video meetings, screen sharing, and real-time messaging.',
 };
 
 export default function RootLayout({

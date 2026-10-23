@@ -994,9 +994,11 @@ export function GroupMeetingOverlay({
       {/* ── TOP HEADER ──────────────────────────────────────────── */}
       <div className="h-14 px-4 sm:px-5 bg-[#111827]/90 backdrop-blur-md border-b border-white/5 flex items-center justify-between shrink-0 z-30">
         <div className="flex items-center gap-3 min-w-0">
-          <div className="h-8 w-8 rounded-xl bg-gradient-to-tr from-violet-600 to-indigo-600 flex items-center justify-center shrink-0 shadow-lg shadow-violet-600/20">
-            <Sparkles className="h-4 w-4 text-white" />
-          </div>
+          <img
+            src="/patterns-logo.png"
+            alt="Patterns"
+            className="h-8 w-auto object-contain shrink-0"
+          />
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <h2 className="text-sm font-bold text-white truncate max-w-[180px] sm:max-w-xs">

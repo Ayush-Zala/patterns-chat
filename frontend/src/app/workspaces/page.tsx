@@ -130,11 +130,12 @@ export default function WorkspacesPage() {
       {/* Modern Top Header */}
       <header className="border-b border-slate-200/90 bg-white/95 backdrop-blur-md sticky top-0 z-20 shadow-2xs">
         <div className="mx-auto flex h-16 max-w-5xl items-center justify-between px-4 sm:px-6">
-          <Link href="/" className="flex items-center gap-2.5 group">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-tr from-indigo-600 via-purple-600 to-pink-500 text-white shadow-md shadow-indigo-500/25 group-hover:scale-105 transition-transform">
-              <Zap className="h-5 w-5" />
-            </div>
-            <span className="font-extrabold text-slate-900 text-lg tracking-tight">TeamFlow</span>
+          <Link href="/workspaces" className="flex items-center gap-2.5 group">
+            <img
+              src="/patterns-logo.png"
+              alt="Patterns"
+              className="h-9 w-auto object-contain transition-transform group-hover:scale-105"
+            />
           </Link>
 
           <div className="flex items-center gap-4">

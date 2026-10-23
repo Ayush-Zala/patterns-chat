@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Zap, ArrowRight, Lock, Mail, AlertCircle, Loader2, Sparkles } from 'lucide-react';
+import { Eye, EyeOff, AlertCircle, Loader2, Sparkles, CheckCircle2 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 
 export default function LoginPage() {
@@ -11,6 +11,7 @@ export default function LoginPage() {
   const { user, login, loading } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deviceKickoutNotice, setDeviceKickoutNotice] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -42,7 +43,7 @@ export default function LoginPage() {
       await login(email, password);
       router.push('/workspaces');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Invalid credentials');
+      setError(err instanceof Error ? err.message : 'Invalid email or password');
     } finally {
       setIsSubmitting(false);
     }
@@ -54,32 +55,51 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col justify-center py-12 sm:px-6 lg:px-8 bg-[#F8FAFC] text-slate-900 relative overflow-hidden selection:bg-indigo-500 selection:text-white">
-      {/* Background Soft Light Ambient Glow */}
-      <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[600px] h-[400px] bg-gradient-to-b from-indigo-200/40 via-purple-100/30 to-transparent blur-3xl pointer-events-none" />
-
-      <div className="sm:mx-auto sm:w-full sm:max-w-md text-center relative z-10">
-        <Link href="/" className="inline-flex items-center gap-2.5 group">
-          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-tr from-indigo-600 via-purple-600 to-pink-500 text-white shadow-xl shadow-indigo-500/20 group-hover:scale-105 transition-transform">
-            <Zap className="h-6 w-6" />
-          </div>
-          <span className="text-2xl font-black tracking-tight text-slate-900">TeamFlow</span>
-        </Link>
-        <h2 className="mt-5 text-3xl font-extrabold text-slate-900 tracking-tight">
-          Welcome Back
-        </h2>
-        <p className="mt-2 text-xs text-slate-500">
-          Or{' '}
-          <Link href="/register" className="font-semibold text-indigo-600 hover:text-indigo-700">
-            create a new account for free
-          </Link>
-        </p>
+    <div className="min-h-screen w-full flex flex-col lg:flex-row bg-white selection:bg-[#0066CC] selection:text-white">
+      {/* ── LEFT SIDE: Patterns Building / Office Photo ───────────────────── */}
+      <div className="hidden lg:block lg:w-7/12 relative h-screen overflow-hidden bg-slate-900">
+        <img
+          src="/patterns-building.jpg"
+          alt="Patterns Headquarters"
+          className="w-full h-full object-cover object-center"
+        />
+        {/* Soft natural gradient shadow */}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-transparent pointer-events-none" />
+        <div className="absolute bottom-6 left-8 z-10 text-white">
+          <p className="text-sm font-semibold tracking-wide drop-shadow-md">Patterns Technologies</p>
+          <p className="text-xs text-white/80 drop-shadow-sm">Quality. Delivered.</p>
+        </div>
       </div>
 
-      <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md px-4 sm:px-0 relative z-10">
-        <div className="bg-white/90 backdrop-blur-xl py-8 px-6 shadow-xl shadow-slate-200/50 rounded-3xl border border-slate-200/80 sm:px-10">
+      {/* ── RIGHT SIDE: Crisp Light Login Form ────────────────────────────── */}
+      <div className="w-full lg:w-5/12 min-h-screen flex flex-col justify-between p-6 sm:p-10 lg:p-14 bg-white relative">
+        {/* Top Header with Patterns Logo */}
+        <div className="pt-2 sm:pt-4 flex items-center justify-between">
+          <Link href="/" className="inline-block transition-transform hover:scale-[1.02]">
+            <img
+              src="/patterns-logo.png"
+              alt="Patterns"
+              className="h-14 sm:h-16 w-auto object-contain"
+            />
+          </Link>
+          <span className="hidden sm:inline-block px-3 py-1 rounded-full text-[11px] font-semibold bg-blue-50 text-[#0066CC] border border-blue-100">
+            Secure Portal
+          </span>
+        </div>
+
+        {/* Center Main Form Area */}
+        <div className="my-auto py-8 max-w-sm sm:max-w-md w-full mx-auto">
+          <div className="mb-8">
+            <h1 className="text-3xl sm:text-4xl font-extrabold text-slate-900 tracking-tight">
+              Welcome Back!
+            </h1>
+            <p className="mt-2 text-sm text-slate-500 font-medium">
+              Login with your email and password to continue
+            </p>
+          </div>
+
           {deviceKickoutNotice && (
-            <div className="mb-5 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-xs text-amber-800 flex items-start gap-3 shadow-xs">
+            <div className="mb-5 rounded-xl border border-amber-300 bg-amber-50 p-4 text-xs text-amber-800 flex items-start gap-3 shadow-xs animate-in fade-in">
               <AlertCircle className="h-4 w-4 shrink-0 text-amber-600 mt-0.5" />
               <div className="flex-1">
                 <p className="font-semibold">{deviceKickoutNotice}</p>
@@ -89,86 +109,96 @@ export default function LoginPage() {
           )}
 
           {error && (
-            <div className="mb-5 rounded-2xl border border-rose-200 bg-rose-50 p-3.5 text-xs text-rose-700 flex items-center gap-3">
+            <div className="mb-5 rounded-xl border border-rose-200 bg-rose-50 p-3.5 text-xs text-rose-700 flex items-center gap-3 animate-in fade-in">
               <AlertCircle className="h-4 w-4 shrink-0 text-rose-500" />
               <span>{error}</span>
             </div>
           )}
 
           <form onSubmit={handleSubmit} className="space-y-4">
+            {/* Email Address */}
             <div>
-              <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
-                Email address
+              <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                Email Address <span className="text-[#0066CC]">*</span>
               </label>
-              <div className="relative mt-1.5">
-                <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5">
-                  <Mail className="h-4 w-4 text-slate-400" />
-                </div>
-                <input
-                  type="email"
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="name@company.com"
-                  className="block w-full rounded-xl border border-slate-200 bg-slate-50/60 pl-10 pr-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:bg-white focus:border-indigo-600 focus:outline-none focus:ring-1 focus:ring-indigo-600 transition-colors"
-                />
-              </div>
+              <input
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="name@company.com"
+                className="w-full px-4 py-3 rounded-lg border border-slate-300 bg-white text-slate-900 text-sm placeholder:text-slate-400 focus:border-[#0066CC] focus:ring-2 focus:ring-[#0066CC]/20 outline-none transition-all shadow-2xs"
+              />
             </div>
 
+            {/* Password */}
             <div>
-              <div className="flex items-center justify-between">
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
-                  Password
-                </label>
-              </div>
-              <div className="relative mt-1.5">
-                <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5">
-                  <Lock className="h-4 w-4 text-slate-400" />
-                </div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                Password <span className="text-[#0066CC]">*</span>
+              </label>
+              <div className="relative">
                 <input
-                  type="password"
+                  type={showPassword ? 'text' : 'password'}
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
-                  className="block w-full rounded-xl border border-slate-200 bg-slate-50/60 pl-10 pr-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:bg-white focus:border-indigo-600 focus:outline-none focus:ring-1 focus:ring-indigo-600 transition-colors"
+                  className="w-full px-4 py-3 rounded-lg border border-slate-300 bg-white text-slate-900 text-sm placeholder:text-slate-400 focus:border-[#0066CC] focus:ring-2 focus:ring-[#0066CC]/20 outline-none transition-all shadow-2xs pr-11"
                 />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-400 hover:text-slate-600 transition-colors"
+                  tabIndex={-1}
+                >
+                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
               </div>
             </div>
 
+            {/* LOGIN Button */}
             <button
               type="submit"
               disabled={isSubmitting}
-              className="w-full mt-2 flex justify-center items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 px-4 py-3 text-xs font-bold text-white shadow-lg shadow-indigo-600/25 hover:opacity-95 transition-all disabled:opacity-50"
+              className="w-full mt-3 py-3.5 px-4 rounded-lg bg-[#0066CC] hover:bg-[#0052A3] text-white font-bold text-xs uppercase tracking-wider shadow-md hover:shadow-lg transition-all active:scale-[0.99] disabled:opacity-50 flex items-center justify-center gap-2"
             >
               {isSubmitting ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  <span>Signing in...</span>
+                  <span>AUTHENTICATING...</span>
                 </>
               ) : (
-                <>
-                  <span>Sign In to TeamFlow</span>
-                  <ArrowRight className="h-4 w-4" />
-                </>
+                <span>LOGIN</span>
               )}
             </button>
           </form>
 
-          {/* Quick Demo Pre-fill Pill */}
-          <div className="mt-6 pt-5 border-t border-slate-100 text-center">
+          {/* Quick Demo Pre-fill */}
+          <div className="mt-5 text-center">
             <button
               type="button"
               onClick={handleQuickDemo}
-              className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-700 hover:text-indigo-800 transition-colors px-3 py-1.5 rounded-xl bg-indigo-50 border border-indigo-200/70 shadow-2xs"
+              className="w-full py-2.5 px-3 rounded-lg bg-blue-50/80 hover:bg-blue-100/80 border border-blue-200/80 text-[#0066CC] text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 shadow-2xs"
             >
-              <Sparkles className="h-3.5 w-3.5 text-indigo-600" />
-              <span>Fill Demo Credentials (demo@teamflow.dev)</span>
+              <Sparkles className="h-3.5 w-3.5 text-[#0066CC]" />
+              <span>Auto-fill Demo Account (demo@teamflow.dev)</span>
             </button>
           </div>
+
+          {/* Create Account Link */}
+          <div className="mt-6 text-center text-xs text-slate-500">
+            Don&apos;t have an account?{' '}
+            <Link href="/register" className="font-bold text-[#0066CC] hover:underline">
+              Create Account
+            </Link>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="pt-6 pb-2 text-center text-xs text-slate-400">
+          © 2026 Patterns. All rights reserved.
         </div>
       </div>
     </div>
   );
 }
-

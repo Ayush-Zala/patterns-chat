@@ -363,7 +363,7 @@ function WorkspaceShellContent() {
   const callOverlayContainerRef = useRef<HTMLDivElement | null>(null);
   const incomingCallNotifRef = useRef<any | null>(null);
   const tabTitleIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const originalTitleRef = useRef<string>('TeamFlow');
+  const originalTitleRef = useRef<string>('Patterns');
 
   // Saved Call Recordings in PostgreSQL State
   interface SavedRecording {
@@ -496,7 +496,7 @@ function WorkspaceShellContent() {
 
   // Update browser document tab title with unread indicator
   useEffect(() => {
-    const baseTitle = currentWs?.name ? `${currentWs.name} - TeamFlow` : 'TeamFlow';
+    const baseTitle = currentWs?.name ? `${currentWs.name} - Patterns` : 'Patterns';
     if (totalUnreadCount > 0) {
       document.title = `(${totalUnreadCount}) 💬 ${baseTitle}`;
     } else {
@@ -542,7 +542,7 @@ function WorkspaceShellContent() {
   // Request Browser Notification permission & check meeting URL param
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      originalTitleRef.current = document.title || 'TeamFlow';
+      originalTitleRef.current = document.title || 'Patterns';
       if ('Notification' in window && Notification.permission === 'default') {
         Notification.requestPermission().catch(() => {});
       }
@@ -1343,7 +1343,7 @@ function WorkspaceShellContent() {
     if (tabTitleIntervalRef.current) {
       clearInterval(tabTitleIntervalRef.current);
       tabTitleIntervalRef.current = null;
-      document.title = originalTitleRef.current || 'TeamFlow';
+      document.title = originalTitleRef.current || 'Patterns';
     }
     if (callTimerRef.current) {
       clearInterval(callTimerRef.current);
@@ -1572,7 +1572,7 @@ function WorkspaceShellContent() {
     if (tabTitleIntervalRef.current) {
       clearInterval(tabTitleIntervalRef.current);
       tabTitleIntervalRef.current = null;
-      document.title = originalTitleRef.current || 'TeamFlow';
+      document.title = originalTitleRef.current || 'Patterns';
     }
 
     const caller = incomingCall.from;
@@ -1747,7 +1747,7 @@ function WorkspaceShellContent() {
     if (tabTitleIntervalRef.current) {
       clearInterval(tabTitleIntervalRef.current);
       tabTitleIntervalRef.current = null;
-      document.title = originalTitleRef.current || 'TeamFlow';
+      document.title = originalTitleRef.current || 'Patterns';
     }
     if (incomingCall?.from?.id) {
       const socket = getSocket();
@@ -4358,7 +4358,7 @@ function WorkspaceShellContent() {
             <div className="h-10 w-10 rounded-2xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 animate-pulse" />
             <Loader2 className="h-6 w-6 animate-spin text-white absolute inset-0 m-auto" />
           </div>
-          <p className="text-xs text-slate-500 font-medium tracking-wide">Launching TeamFlow Workspace...</p>
+          <p className="text-xs text-slate-500 font-medium tracking-wide">Launching Patterns Workspace...</p>
         </div>
       </div>
     );
@@ -4398,6 +4398,20 @@ function WorkspaceShellContent() {
           showMobileSidebar ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
+        {/* Official Patterns Brand Logo Header */}
+        <div className="px-4 py-3 flex items-center justify-between border-b border-slate-100 bg-white">
+          <Link href="/workspaces" className="flex items-center gap-2 group">
+            <img
+              src="/patterns-logo.png"
+              alt="Patterns"
+              className="h-8 w-auto object-contain transition-transform group-hover:scale-105"
+            />
+          </Link>
+          <span className="text-[10px] font-bold tracking-wider text-slate-400 uppercase bg-slate-50 px-2 py-0.5 rounded-md border border-slate-200/60">
+            Workspace
+          </span>
+        </div>
+
         {/* Workspace Hub & Switcher Header */}
         <div className="p-3 border-b border-slate-100 relative">
           <div className="flex items-center justify-between gap-2">
@@ -9657,7 +9671,7 @@ export default function WorkspaceShellPage() {
         <div className="h-screen w-screen flex items-center justify-center bg-[#F8FAFC] text-slate-800">
           <div className="flex flex-col items-center gap-3">
             <Loader2 className="h-8 w-8 animate-spin text-indigo-600" />
-            <p className="text-xs text-slate-500 font-medium tracking-wide">Loading TeamFlow...</p>
+            <p className="text-xs text-slate-500 font-medium tracking-wide">Loading Patterns...</p>
           </div>
         </div>
       }
