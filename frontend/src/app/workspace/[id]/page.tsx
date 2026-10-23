@@ -4502,10 +4502,14 @@ function WorkspaceShellContent() {
           </button>
           <Link href="/workspaces" className="flex items-center gap-2.5 group">
             <img
-              src="/patterns-logo.png"
+              src="/patterns-icon.png"
               alt="Patterns"
               className="h-7 sm:h-8 w-auto object-contain transition-transform group-hover:scale-105"
             />
+            <div className="flex items-center gap-1 font-black text-lg sm:text-xl tracking-tight text-slate-900">
+              <span>Patterns</span>
+              <span className="text-indigo-600">Chat</span>
+            </div>
           </Link>
         </div>
 

@@ -14,9 +14,17 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'Patterns — Quality. Delivered. | Team Collaboration & Chat',
+  title: 'Patterns Chat — Quality. Delivered. | Team Collaboration & Chat',
   description:
-    'Patterns is a modern, high-performance team collaboration platform with channels, video meetings, screen sharing, and real-time messaging.',
+    'Patterns Chat brings your team, conversations, and tools into one powerful workspace. Chat, meet, share and get things done — all in one place.',
+  icons: {
+    icon: [
+      { url: '/patterns-icon.png', sizes: '32x32', type: 'image/png' },
+      { url: '/patterns-icon.png', sizes: '192x192', type: 'image/png' },
+    ],
+    shortcut: '/patterns-icon.png',
+    apple: '/patterns-icon.png',
+  },
 };
 
 export default function RootLayout({

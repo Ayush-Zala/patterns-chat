@@ -129,13 +129,17 @@ export default function WorkspacesPage() {
     <div className="min-h-screen bg-[#F8FAFC] text-slate-900 flex flex-col relative selection:bg-indigo-500 selection:text-white antialiased">
       {/* Modern Top Header */}
       <header className="border-b border-slate-200/90 bg-white/95 backdrop-blur-md sticky top-0 z-20 shadow-2xs">
-        <div className="mx-auto flex h-16 max-w-5xl items-center justify-between px-4 sm:px-6">
+        <div className="w-full flex h-16 items-center justify-between px-4 sm:px-8">
           <Link href="/workspaces" className="flex items-center gap-2.5 group">
             <img
-              src="/patterns-logo.png"
+              src="/patterns-icon.png"
               alt="Patterns"
-              className="h-9 w-auto object-contain transition-transform group-hover:scale-105"
+              className="h-8 w-auto object-contain transition-transform group-hover:scale-105"
             />
+            <div className="flex items-center gap-1 font-black text-xl tracking-tight text-slate-900">
+              <span>Patterns</span>
+              <span className="text-indigo-600">Chat</span>
+            </div>
           </Link>
 
           <div className="flex items-center gap-4">
