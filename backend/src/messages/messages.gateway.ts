@@ -529,6 +529,8 @@ export class MessagesGateway implements OnGatewayConnection, OnGatewayDisconnect
       isMicMuted?: boolean;
       isVideoMuted?: boolean;
       isScreenSharing?: boolean;
+      hasHandRaised?: boolean;
+      isRecording?: boolean;
     },
   ) {
     if (data?.meetingId) {
@@ -537,6 +539,35 @@ export class MessagesGateway implements OnGatewayConnection, OnGatewayDisconnect
         socketId: client.id,
         ...data,
       });
+    }
+  }
+
+  @SubscribeMessage('meeting_chat_message')
+  handleMeetingChatMessage(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      meetingId: string;
+      id: string;
+      senderId: string;
+      senderName: string;
+      senderAvatar?: string;
+      content: string;
+      timestamp: number;
+    },
+  ) {
+    if (data?.meetingId && data?.content) {
+      const room = `meeting:${data.meetingId}`;
+      // Broadcast to all OTHER participants in the meeting room
+      client.to(room).emit('meeting_chat_message', {
+        id: data.id,
+        senderId: data.senderId,
+        senderName: data.senderName,
+        senderAvatar: data.senderAvatar,
+        content: data.content,
+        timestamp: data.timestamp,
+      });
+      this.logger.log(`💬 Meeting chat message in meeting ${data.meetingId} from ${data.senderName}`);
     }
   }
 

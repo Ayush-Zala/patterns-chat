@@ -8977,6 +8977,36 @@ function WorkspaceShellContent() {
               )}
             </div>
 
+            {/* Add People / Escalate to Group Meeting */}
+            {callStatus === 'connected' && (
+              <button
+                type="button"
+                onClick={() => {
+                  // Escalate 1-on-1 to a group meeting room
+                  const groupMeetingId = `dm-${user?.id}-${callPeer?.id}-${Date.now()}`;
+                  setActiveTeamMeeting({
+                    id: groupMeetingId,
+                    workspaceId: workspaceId || '',
+                    title: `Call with ${callPeer?.name}`,
+                    scheduledAt: new Date().toISOString(),
+                    duration: 60,
+                    hostId: user?.id || '',
+                    status: 'LIVE' as const,
+                    createdAt: new Date().toISOString(),
+                    host: { id: user?.id || '', name: user?.name || '', email: user?.email || '' },
+                    participants: [],
+                  });
+                  // End the 1-on-1 call — they'll rejoin via group meeting
+                  cleanupCall(false);
+                }}
+                className="p-3 sm:p-3.5 rounded-2xl bg-violet-600 hover:bg-violet-500 text-white transition-all shadow-md shadow-violet-600/30 flex items-center gap-1.5"
+                title="Add people — Upgrade to Group Meeting"
+              >
+                <UserPlus className="h-5 w-5" />
+                <span className="hidden md:inline text-xs font-bold">Add People</span>
+              </button>
+            )}
+
             {/* Record Call Button (Audio & Video) */}
             <button
               type="button"
@@ -8990,6 +9020,7 @@ function WorkspaceShellContent() {
             >
               {isRecording ? <Square className="h-5 w-5 fill-current" /> : <Disc className="h-5 w-5 text-rose-400" />}
             </button>
+
 
             {/* End Call Button */}
             <button
@@ -9016,6 +9047,13 @@ function WorkspaceShellContent() {
           user={user}
           userRole={currentUserRole || 'MEMBER'}
           socket={getSocket()}
+          members={members.map((m) => ({
+            id: m.user.id,
+            name: m.user.name,
+            email: m.user.email,
+            avatarUrl: m.user.avatarUrl,
+            role: m.role,
+          }))}
           onLeaveMeeting={() => {
             setActiveTeamMeeting(null);
             if (typeof window !== 'undefined' && window.location.search.includes('meeting=')) {
