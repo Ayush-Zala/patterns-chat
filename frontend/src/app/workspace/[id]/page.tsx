@@ -92,6 +92,8 @@ import {
   MoreHorizontal,
   Home,
   Folder,
+  Camera,
+  Upload,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { Workspace, WorkspaceMember, WorkspaceRole, Meeting } from '@/types/auth';
@@ -305,7 +307,17 @@ function WorkspaceShellContent() {
   const params = useParams();
   const router = useRouter();
   const workspaceId = params.id as string;
-  const { user, token, loading: authLoading, workspaces, logout, setCurrentWorkspace } = useAuth();
+  const { user, token, loading: authLoading, workspaces, logout, setCurrentWorkspace, updateProfile } = useAuth();
+
+  // Profile Edit & Upload State
+  const avatarFileInputRef = useRef<HTMLInputElement>(null);
+  const [showEditProfileModal, setShowEditProfileModal] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editAvatarUrl, setEditAvatarUrl] = useState('');
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
+  const [profileSuccessMsg, setProfileSuccessMsg] = useState<string | null>(null);
+  const [profileErrorMsg, setProfileErrorMsg] = useState<string | null>(null);
 
   // Core Data State
   const [currentWs, setCurrentWs] = useState<Workspace | null>(null);
@@ -3594,6 +3606,73 @@ function WorkspaceShellContent() {
     }
   }
 
+  async function handleAvatarFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploadingPhoto(true);
+    setProfileErrorMsg(null);
+
+    // Instant local preview
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      if (event.target?.result) {
+        setEditAvatarUrl(event.target.result as string);
+      }
+    };
+    reader.readAsDataURL(file);
+
+    // Upload to server
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch(`${API_URL}/upload`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        body: formData,
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const fullUrl = data.fileUrl.startsWith('http')
+          ? data.fileUrl
+          : `${API_URL.replace(/\/api\/?$/, '')}${data.fileUrl}`;
+        setEditAvatarUrl(fullUrl);
+      }
+    } catch (err) {
+      console.warn('Backend upload failed, local preview retained:', err);
+    } finally {
+      setIsUploadingPhoto(false);
+    }
+  }
+
+  async function handleSaveProfile(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editName.trim()) return;
+
+    setIsSavingProfile(true);
+    setProfileErrorMsg(null);
+    setProfileSuccessMsg(null);
+
+    try {
+      await updateProfile({
+        name: editName.trim(),
+        avatarUrl: editAvatarUrl || undefined,
+      });
+      setProfileSuccessMsg('Profile updated successfully!');
+      setTimeout(() => {
+        setShowEditProfileModal(false);
+        setProfileSuccessMsg(null);
+      }, 900);
+    } catch (err: any) {
+      setProfileErrorMsg(err.message || 'Failed to update profile');
+    } finally {
+      setIsSavingProfile(false);
+    }
+  }
+
   // 4. Open Thread Drawer
   async function openThread(parentMessage: Message) {
     if (!token) return;
@@ -4500,15 +4579,15 @@ function WorkspaceShellContent() {
           >
             <Menu className="h-5 w-5" />
           </button>
-          <Link href="/workspaces" className="flex items-center gap-2.5 group">
+          <Link href="/workspaces" className="flex items-center gap-2.5 group shrink-0">
             <img
-              src="/patterns-icon.png"
+              src="/patterns-icon.png?v=2"
               alt="Patterns"
-              className="h-7 sm:h-8 w-auto object-contain transition-transform group-hover:scale-105"
+              className="h-8 sm:h-9 w-auto object-contain transition-transform group-hover:scale-105 drop-shadow-2xs"
             />
             <div className="flex items-center gap-1 font-black text-lg sm:text-xl tracking-tight text-slate-900">
               <span>Patterns</span>
-              <span className="text-indigo-600">Chat</span>
+              <span className="text-indigo-600 font-extrabold">Chat</span>
             </div>
           </Link>
         </div>
@@ -4565,27 +4644,199 @@ function WorkspaceShellContent() {
             <HelpCircle className="h-5 w-5" />
           </button>
 
-          <button
-            type="button"
-            onClick={() => setShowPresenceMenu(!showPresenceMenu)}
-            className="relative ml-1 flex items-center justify-center h-8 w-8 sm:h-9 sm:w-9 rounded-full ring-2 ring-slate-200 hover:ring-indigo-400 transition-all overflow-hidden shrink-0"
-            title={`${user.name} (${userPresence})`}
-          >
-            <img
-              src={user.avatarUrl || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
-              alt={user.name}
-              className="h-full w-full object-cover"
-            />
-            <span
-              className={`absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full ring-2 ring-white ${
-                userPresence === 'AWAY'
-                  ? 'bg-amber-400'
-                  : userPresence === 'OFFLINE'
-                  ? 'bg-slate-300'
-                  : 'bg-emerald-500'
-              }`}
-            />
-          </button>
+          {/* User Avatar with Zoom-Style Outside Status Dot */}
+          <div className="relative ml-1">
+            <button
+              type="button"
+              onClick={() => setShowPresenceMenu(!showPresenceMenu)}
+              className="relative flex items-center justify-center shrink-0 group focus:outline-none"
+              title={`${user.name} (${userPresence})`}
+            >
+              {/* Inner Avatar with overflow-hidden ONLY on image circle */}
+              <div className="h-8 w-8 sm:h-9 sm:w-9 rounded-full ring-2 ring-slate-200 group-hover:ring-indigo-400 transition-all overflow-hidden bg-slate-100 flex items-center justify-center shadow-2xs">
+                <img
+                  src={user.avatarUrl || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
+                  alt={user.name}
+                  className="h-full w-full object-cover"
+                />
+              </div>
+
+              {/* Zoom-style Status Badge: Sits OUTSIDE bottom-right with crisp ring */}
+              <span
+                className={`absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 rounded-full ring-2 ring-white shadow-xs flex items-center justify-center pointer-events-none transition-transform group-hover:scale-110 ${
+                  userPresence === 'AWAY'
+                    ? 'bg-amber-400'
+                    : userPresence === 'BUSY'
+                    ? 'bg-rose-500'
+                    : userPresence === 'OFFLINE'
+                    ? 'bg-slate-400'
+                    : 'bg-emerald-500'
+                }`}
+              >
+                {userPresence === 'BUSY' && (
+                  <span className="h-0.5 w-1.5 bg-white rounded-full" />
+                )}
+              </span>
+            </button>
+
+            {/* Top-Right User Menu Popover */}
+            {showPresenceMenu && (
+              <div
+                className="absolute right-0 top-full mt-2 w-72 rounded-2xl bg-white border border-slate-200 shadow-2xl p-2.5 z-50 text-xs animate-in fade-in zoom-in-95 duration-150 select-none"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* User card info */}
+                <div className="p-3 bg-slate-50/80 rounded-xl border border-slate-100 flex items-center gap-3 mb-2">
+                  <div className="relative shrink-0">
+                    <div className="h-10 w-10 rounded-full overflow-hidden ring-2 ring-white shadow-2xs">
+                      <img
+                        src={user.avatarUrl || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
+                        alt={user.name}
+                        className="h-full w-full object-cover"
+                      />
+                    </div>
+                    <span
+                      className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full ring-2 ring-white ${
+                        userPresence === 'AWAY'
+                          ? 'bg-amber-400'
+                          : userPresence === 'BUSY'
+                          ? 'bg-rose-500'
+                          : userPresence === 'OFFLINE'
+                          ? 'bg-slate-400'
+                          : 'bg-emerald-500'
+                      }`}
+                    />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-extrabold text-slate-900 text-sm truncate">{user.name}</p>
+                    <p className="text-[11px] text-slate-400 font-mono truncate">{user.email}</p>
+                    <span className="inline-block mt-1 text-[9px] font-bold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-200 uppercase">
+                      {isWorkspaceOwner ? 'Owner' : currentUserRole}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Edit Profile Action */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowPresenceMenu(false);
+                    setEditName(user.name);
+                    setEditAvatarUrl(user.avatarUrl || '');
+                    setProfileSuccessMsg(null);
+                    setProfileErrorMsg(null);
+                    setShowEditProfileModal(true);
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-left font-bold text-slate-700 hover:text-indigo-600 hover:bg-indigo-50/60 transition-all mb-1 border border-transparent hover:border-indigo-100"
+                >
+                  <Pencil className="h-4 w-4 text-indigo-600" />
+                  <span>Edit Profile & Photo</span>
+                </button>
+
+                <div className="h-px bg-slate-100 my-1" />
+
+                {/* Presence Status Selection (Zoom Style) */}
+                <div className="space-y-0.5 py-1">
+                  <span className="text-[10px] uppercase font-bold text-slate-400 px-3 py-1 block">
+                    My Status (Zoom Style)
+                  </span>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleUpdatePresence('ONLINE');
+                      setShowPresenceMenu(false);
+                    }}
+                    className={`w-full flex items-center justify-between px-3 py-1.5 rounded-xl text-left transition-colors ${
+                      userPresence === 'ONLINE'
+                        ? 'bg-emerald-50 text-emerald-800 font-bold'
+                        : 'hover:bg-slate-50 text-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <span className="h-3 w-3 rounded-full bg-emerald-500 ring-2 ring-white shadow-2xs" />
+                      <span>Available (Online)</span>
+                    </div>
+                    {userPresence === 'ONLINE' && <Check className="h-3.5 w-3.5 text-emerald-600" />}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleUpdatePresence('BUSY');
+                      setShowPresenceMenu(false);
+                    }}
+                    className={`w-full flex items-center justify-between px-3 py-1.5 rounded-xl text-left transition-colors ${
+                      userPresence === 'BUSY'
+                        ? 'bg-rose-50 text-rose-800 font-bold'
+                        : 'hover:bg-slate-50 text-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <span className="h-3 w-3 rounded-full bg-rose-500 ring-2 ring-white shadow-2xs flex items-center justify-center">
+                        <span className="h-0.5 w-1.5 bg-white rounded-full" />
+                      </span>
+                      <span>Busy (Do Not Disturb)</span>
+                    </div>
+                    {userPresence === 'BUSY' && <Check className="h-3.5 w-3.5 text-rose-600" />}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleUpdatePresence('AWAY');
+                      setShowPresenceMenu(false);
+                    }}
+                    className={`w-full flex items-center justify-between px-3 py-1.5 rounded-xl text-left transition-colors ${
+                      userPresence === 'AWAY'
+                        ? 'bg-amber-50 text-amber-800 font-bold'
+                        : 'hover:bg-slate-50 text-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <span className="h-3 w-3 rounded-full bg-amber-400 ring-2 ring-white shadow-2xs" />
+                      <span>Away</span>
+                    </div>
+                    {userPresence === 'AWAY' && <Check className="h-3.5 w-3.5 text-amber-600" />}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleUpdatePresence('OFFLINE');
+                      setShowPresenceMenu(false);
+                    }}
+                    className={`w-full flex items-center justify-between px-3 py-1.5 rounded-xl text-left transition-colors ${
+                      userPresence === 'OFFLINE'
+                        ? 'bg-slate-100 text-slate-800 font-bold'
+                        : 'hover:bg-slate-50 text-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <span className="h-3 w-3 rounded-full bg-slate-400 ring-2 ring-white shadow-2xs" />
+                      <span>Invisible</span>
+                    </div>
+                    {userPresence === 'OFFLINE' && <Check className="h-3.5 w-3.5 text-slate-600" />}
+                  </button>
+                </div>
+
+                <div className="h-px bg-slate-100 my-1" />
+
+                {/* Sign Out */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    logout();
+                    router.push('/login');
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-left font-semibold text-rose-600 hover:bg-rose-50 transition-colors"
+                >
+                  <LogOut className="h-4 w-4" />
+                  <span>Sign out</span>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
@@ -5074,99 +5325,176 @@ function WorkspaceShellContent() {
               title="Change status or sign out"
             >
               <div className="relative shrink-0">
-                <img
-                  src={user.avatarUrl || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
-                  alt={user.name}
-                  className="h-8 w-8 rounded-xl border border-slate-200 object-cover shadow-2xs"
-                />
+                <div className="h-9 w-9 rounded-full ring-2 ring-slate-200 overflow-hidden bg-slate-100 flex items-center justify-center shadow-2xs">
+                  <img
+                    src={user.avatarUrl || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
+                    alt={user.name}
+                    className="h-full w-full object-cover"
+                  />
+                </div>
                 <span
-                  className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-white ${
+                  className={`absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 rounded-full ring-2 ring-white shadow-xs flex items-center justify-center pointer-events-none ${
                     userPresence === 'AWAY'
                       ? 'bg-amber-400'
+                      : userPresence === 'BUSY'
+                      ? 'bg-rose-500'
+                      : userPresence === 'OFFLINE'
+                      ? 'bg-slate-400'
+                      : 'bg-emerald-500'
+                  }`}
+                >
+                  {userPresence === 'BUSY' && (
+                    <span className="h-0.5 w-1.5 bg-white rounded-full" />
+                  )}
+                </span>
+              </div>
+            <div className="flex flex-col min-w-0 flex-1">
+              <span className="font-bold text-xs text-slate-800 truncate">{user.name}</span>
+              <span className="text-[10px] text-slate-400 truncate flex items-center gap-1 font-medium">
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${
+                    userPresence === 'AWAY'
+                      ? 'bg-amber-400'
+                      : userPresence === 'BUSY'
+                      ? 'bg-rose-500'
                       : userPresence === 'OFFLINE'
                       ? 'bg-slate-300'
                       : 'bg-emerald-500'
                   }`}
                 />
-              </div>
-              <div className="flex flex-col min-w-0 flex-1">
-                <span className="font-bold text-xs text-slate-800 truncate">{user.name}</span>
-                <span className="text-[10px] text-slate-400 truncate flex items-center gap-1 font-medium">
-                  <span className={`h-1.5 w-1.5 rounded-full ${userPresence === 'AWAY' ? 'bg-amber-400' : userPresence === 'OFFLINE' ? 'bg-slate-300' : 'bg-emerald-500'}`} />
-                  <span>{userPresence === 'AWAY' ? 'Away' : userPresence === 'OFFLINE' ? 'Offline' : 'Active'}</span>
+                <span>
+                  {userPresence === 'AWAY'
+                    ? 'Away'
+                    : userPresence === 'BUSY'
+                    ? 'Busy'
+                    : userPresence === 'OFFLINE'
+                    ? 'Offline'
+                    : 'Active'}
                 </span>
-              </div>
-            </button>
-
-            <button
-              onClick={() => {
-                logout();
-                router.push('/login');
-              }}
-              title="Sign Out"
-              className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors shrink-0"
-            >
-              <LogOut className="h-4 w-4" />
-            </button>
-          </div>
-
-          {/* User Presence Menu Popover */}
-          {showPresenceMenu && (
-            <div className="absolute bottom-full left-3 right-3 mb-2 rounded-2xl bg-white border border-slate-200/90 shadow-2xl p-2 z-50 text-xs animate-in slide-in-from-bottom-2 duration-150">
-              <div className="px-3 py-2 border-b border-slate-100 mb-1">
-                <p className="font-bold text-slate-900 truncate">{user.name}</p>
-                <p className="text-[10px] text-slate-400 truncate font-mono">{user.email}</p>
-              </div>
-
-              <div className="space-y-0.5 py-1">
-                <span className="text-[10px] uppercase font-bold text-slate-400 px-3 py-1 block">
-                  Set My Status
-                </span>
-                <button
-                  onClick={() => {
-                    handleUpdatePresence('ONLINE');
-                    setShowPresenceMenu(false);
-                  }}
-                  className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-left transition-colors ${
-                    userPresence === 'ONLINE'
-                      ? 'bg-emerald-50 text-emerald-800 font-bold'
-                      : 'hover:bg-slate-50 text-slate-700'
-                  }`}
-                >
-                  <span className="h-2 w-2 rounded-full bg-emerald-500" />
-                  <span>🟢 Active (Online)</span>
-                </button>
-                <button
-                  onClick={() => {
-                    handleUpdatePresence('AWAY');
-                    setShowPresenceMenu(false);
-                  }}
-                  className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-left transition-colors ${
-                    userPresence === 'AWAY'
-                      ? 'bg-amber-50 text-amber-800 font-bold'
-                      : 'hover:bg-slate-50 text-slate-700'
-                  }`}
-                >
-                  <span className="h-2 w-2 rounded-full bg-amber-400" />
-                  <span>🟡 Away</span>
-                </button>
-                <button
-                  onClick={() => {
-                    handleUpdatePresence('OFFLINE');
-                    setShowPresenceMenu(false);
-                  }}
-                  className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-left transition-colors ${
-                    userPresence === 'OFFLINE'
-                      ? 'bg-slate-100 text-slate-800 font-bold'
-                      : 'hover:bg-slate-50 text-slate-700'
-                  }`}
-                >
-                  <span className="h-2 w-2 rounded-full bg-slate-300" />
-                  <span>⚪ Invisible</span>
-                </button>
-              </div>
+              </span>
             </div>
-          )}
+          </button>
+
+          <button
+            onClick={() => {
+              logout();
+              router.push('/login');
+            }}
+            title="Sign Out"
+            className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors shrink-0"
+          >
+            <LogOut className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* User Presence Menu Popover */}
+        {showPresenceMenu && (
+          <div className="absolute bottom-full left-3 right-3 mb-2 rounded-2xl bg-white border border-slate-200/90 shadow-2xl p-2.5 z-50 text-xs animate-in slide-in-from-bottom-2 duration-150 select-none">
+            <div className="px-3 py-2 border-b border-slate-100 mb-1">
+              <p className="font-bold text-slate-900 truncate">{user.name}</p>
+              <p className="text-[10px] text-slate-400 truncate font-mono">{user.email}</p>
+            </div>
+
+            {/* Edit Profile Action */}
+            <button
+              type="button"
+              onClick={() => {
+                setShowPresenceMenu(false);
+                setEditName(user.name);
+                setEditAvatarUrl(user.avatarUrl || '');
+                setProfileSuccessMsg(null);
+                setProfileErrorMsg(null);
+                setShowEditProfileModal(true);
+              }}
+              className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-left font-bold text-slate-700 hover:text-indigo-600 hover:bg-indigo-50/60 transition-all mb-1 border border-transparent hover:border-indigo-100"
+            >
+              <Pencil className="h-4 w-4 text-indigo-600" />
+              <span>Edit Profile & Photo</span>
+            </button>
+
+            <div className="h-px bg-slate-100 my-1" />
+
+            <div className="space-y-0.5 py-1">
+              <span className="text-[10px] uppercase font-bold text-slate-400 px-3 py-1 block">
+                My Status (Zoom Style)
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  handleUpdatePresence('ONLINE');
+                  setShowPresenceMenu(false);
+                }}
+                className={`w-full flex items-center justify-between px-3 py-1.5 rounded-xl text-left transition-colors ${
+                  userPresence === 'ONLINE'
+                    ? 'bg-emerald-50 text-emerald-800 font-bold'
+                    : 'hover:bg-slate-50 text-slate-700'
+                }`}
+              >
+                <div className="flex items-center gap-2.5">
+                  <span className="h-3 w-3 rounded-full bg-emerald-500 ring-2 ring-white shadow-2xs" />
+                  <span>Available (Online)</span>
+                </div>
+                {userPresence === 'ONLINE' && <Check className="h-3.5 w-3.5 text-emerald-600" />}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleUpdatePresence('BUSY');
+                  setShowPresenceMenu(false);
+                }}
+                className={`w-full flex items-center justify-between px-3 py-1.5 rounded-xl text-left transition-colors ${
+                  userPresence === 'BUSY'
+                    ? 'bg-rose-50 text-rose-800 font-bold'
+                    : 'hover:bg-slate-50 text-slate-700'
+                }`}
+              >
+                <div className="flex items-center gap-2.5">
+                  <span className="h-3 w-3 rounded-full bg-rose-500 ring-2 ring-white shadow-2xs flex items-center justify-center">
+                    <span className="h-0.5 w-1.5 bg-white rounded-full" />
+                  </span>
+                  <span>Busy (Do Not Disturb)</span>
+                </div>
+                {userPresence === 'BUSY' && <Check className="h-3.5 w-3.5 text-rose-600" />}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleUpdatePresence('AWAY');
+                  setShowPresenceMenu(false);
+                }}
+                className={`w-full flex items-center justify-between px-3 py-1.5 rounded-xl text-left transition-colors ${
+                  userPresence === 'AWAY'
+                    ? 'bg-amber-50 text-amber-800 font-bold'
+                    : 'hover:bg-slate-50 text-slate-700'
+                }`}
+              >
+                <div className="flex items-center gap-2.5">
+                  <span className="h-3 w-3 rounded-full bg-amber-400 ring-2 ring-white shadow-2xs" />
+                  <span>Away</span>
+                </div>
+                {userPresence === 'AWAY' && <Check className="h-3.5 w-3.5 text-amber-600" />}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleUpdatePresence('OFFLINE');
+                  setShowPresenceMenu(false);
+                }}
+                className={`w-full flex items-center justify-between px-3 py-1.5 rounded-xl text-left transition-colors ${
+                  userPresence === 'OFFLINE'
+                    ? 'bg-slate-100 text-slate-800 font-bold'
+                    : 'hover:bg-slate-50 text-slate-700'
+                }`}
+              >
+                <div className="flex items-center gap-2.5">
+                  <span className="h-3 w-3 rounded-full bg-slate-400 ring-2 ring-white shadow-2xs" />
+                  <span>Invisible</span>
+                </div>
+                {userPresence === 'OFFLINE' && <Check className="h-3.5 w-3.5 text-slate-600" />}
+              </button>
+            </div>
+          </div>
+        )}
         </div>
       </aside>
 
@@ -5175,7 +5503,8 @@ function WorkspaceShellContent() {
       ───────────────────────────────────────────────────────────── */}
       <main className="flex-1 bg-white rounded-2xl md:rounded-3xl border border-slate-200/80 shadow-xs flex flex-col min-w-0 text-slate-900 relative overflow-hidden">
         {/* Spacious & Responsive Chat Header (Image 3 Caliber) */}
-        <header className="h-16 px-4 sm:px-6 border-b border-slate-100 flex items-center justify-between shrink-0 z-10 bg-white">
+        {!showCalendarView && (
+          <header className="h-16 px-4 sm:px-6 border-b border-slate-100 flex items-center justify-between shrink-0 z-10 bg-white">
           {/* Mobile hamburger menu button */}
           <button
             type="button"
@@ -5547,6 +5876,7 @@ function WorkspaceShellContent() {
             </div>
           </div>
         </header>
+        )}
 
           {/* Main Feed + Thread Split */}
           <div className="flex-1 flex overflow-hidden">
@@ -5558,6 +5888,7 @@ function WorkspaceShellContent() {
                 currentUserRole={currentUserRole || 'MEMBER'}
                 channels={channels}
                 members={members}
+                onToggleSidebar={() => setShowMobileSidebar(true)}
                 onStartInstantMeeting={(meetingTitle, channelId) => {
                   const targetChannel = channels.find((c) => c.id === channelId) || activeChannel;
                   const instantMeeting: Meeting = {
@@ -9841,6 +10172,152 @@ function WorkspaceShellContent() {
                 Close
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── EDIT PROFILE & PHOTO MODAL ────────────────────────────── */}
+      {showEditProfileModal && (
+        <div className="fixed inset-0 z-[250] flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+          <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden text-slate-900 animate-in zoom-in-95 duration-200">
+            {/* Modal Header */}
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="h-8 w-8 rounded-xl bg-indigo-50 border border-indigo-100 text-indigo-600 flex items-center justify-center">
+                  <User className="h-4 w-4" />
+                </div>
+                <h3 className="font-extrabold text-base text-slate-900">Edit Profile</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowEditProfileModal(false)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <form onSubmit={handleSaveProfile} className="p-6 space-y-4">
+              {profileSuccessMsg && (
+                <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-700 flex items-center gap-2">
+                  <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
+                  <span>{profileSuccessMsg}</span>
+                </div>
+              )}
+
+              {profileErrorMsg && (
+                <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700 flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0 text-rose-600" />
+                  <span>{profileErrorMsg}</span>
+                </div>
+              )}
+
+              {/* Avatar Upload Preview */}
+              <div className="flex flex-col items-center justify-center text-center">
+                <div
+                  className="relative group cursor-pointer"
+                  onClick={() => avatarFileInputRef.current?.click()}
+                  title="Click to upload profile photo"
+                >
+                  <div className="h-24 w-24 rounded-full ring-4 ring-indigo-100 group-hover:ring-indigo-300 transition-all overflow-hidden bg-slate-100 shadow-md">
+                    <img
+                      src={editAvatarUrl || user.avatarUrl || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
+                      alt="Profile Preview"
+                      className="h-full w-full object-cover"
+                    />
+                  </div>
+                  <div className="absolute inset-0 rounded-full bg-slate-900/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center text-white text-[11px] font-bold">
+                    <Camera className="h-5 w-5 mb-0.5" />
+                    <span>Upload</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="absolute bottom-0 right-0 p-2 rounded-full bg-indigo-600 text-white shadow-md hover:bg-indigo-700 border-2 border-white transition-transform group-hover:scale-110"
+                    title="Upload photo"
+                  >
+                    {isUploadingPhoto ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Camera className="h-3.5 w-3.5" />}
+                  </button>
+                </div>
+
+                <input
+                  ref={avatarFileInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={handleAvatarFileUpload}
+                />
+
+                <p className="text-xs text-slate-500 mt-2 font-medium">
+                  Click avatar to upload your profile photo (PNG, JPG, WebP)
+                </p>
+
+                {/* Quick Avatar Generator seeds */}
+                <div className="flex items-center gap-1.5 mt-2">
+                  <span className="text-[11px] text-slate-400 font-medium">Or pick style:</span>
+                  {['Yash', 'Alex', 'Sarah', 'Dev', 'Jordan'].map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => setEditAvatarUrl(`https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(preset)}&backgroundColor=4f46e5,7c3aed,06b6d4`)}
+                      className="px-2 py-0.5 text-[10px] font-bold bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 rounded-md transition-colors"
+                    >
+                      {preset}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Full Name */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Full Name <span className="text-indigo-600">*</span>
+                </label>
+                <div className="relative">
+                  <User className="h-4 w-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    required
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    placeholder="Enter your name"
+                    className="w-full pl-9 pr-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-xs sm:text-sm text-slate-900 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 shadow-2xs"
+                  />
+                </div>
+              </div>
+
+              {/* Email Address (Read-only) */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Email Address
+                </label>
+                <input
+                  type="email"
+                  disabled
+                  value={user.email}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-xs sm:text-sm text-slate-500 cursor-not-allowed font-mono"
+                />
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setShowEditProfileModal(false)}
+                  className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingProfile || !editName.trim()}
+                  className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:scale-[0.99] text-white font-bold text-xs shadow-md shadow-indigo-600/20 disabled:opacity-50 transition-all flex items-center gap-1.5"
+                >
+                  {isSavingProfile ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                  <span>{isSavingProfile ? 'Saving...' : 'Save Changes'}</span>
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

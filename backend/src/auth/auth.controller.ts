@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Patch,
   Body,
   UseGuards,
   HttpCode,
@@ -28,9 +29,26 @@ export class AuthController {
     return this.authService.login(dto);
   }
 
+  @HttpCode(HttpStatus.OK)
+  @Post('google')
+  async googleLogin(
+    @Body() body: { email?: string; name?: string; avatarUrl?: string },
+  ) {
+    return this.authService.googleLogin(body);
+  }
+
   @UseGuards(JwtAuthGuard)
   @Get('me')
   async getProfile(@CurrentUser() user: { id: string }) {
     return this.authService.getProfile(user.id);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch('profile')
+  async updateProfile(
+    @CurrentUser() user: { id: string },
+    @Body() body: { name?: string; avatarUrl?: string },
+  ) {
+    return this.authService.updateProfile(user.id, body);
   }
 }

@@ -93,7 +93,7 @@ export interface ThreadData {
   replies: Message[];
 }
 
-export type PresenceStatus = 'ONLINE' | 'AWAY' | 'OFFLINE';
+export type PresenceStatus = 'ONLINE' | 'AWAY' | 'BUSY' | 'OFFLINE';
 
 export interface DirectMessage {
   id: string;

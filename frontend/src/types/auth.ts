@@ -4,7 +4,7 @@ export interface User {
   name: string;
   avatarUrl?: string;
   status?: string;
-  presence?: 'ONLINE' | 'AWAY' | 'OFFLINE';
+  presence?: 'ONLINE' | 'AWAY' | 'BUSY' | 'OFFLINE';
   createdAt?: string;
 }
 
@@ -38,7 +38,7 @@ export interface WorkspaceMember {
     email: string;
     avatarUrl?: string;
     status?: string;
-    presence?: 'ONLINE' | 'AWAY' | 'OFFLINE';
+    presence?: 'ONLINE' | 'AWAY' | 'BUSY' | 'OFFLINE';
     createdAt?: string;
   };
 }
@@ -60,7 +60,7 @@ export interface MeetingParticipant {
     email: string;
     avatarUrl?: string;
     status?: string;
-    presence?: 'ONLINE' | 'AWAY' | 'OFFLINE';
+    presence?: 'ONLINE' | 'AWAY' | 'BUSY' | 'OFFLINE';
   };
 }
 

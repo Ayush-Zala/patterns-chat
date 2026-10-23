@@ -19,11 +19,11 @@ export const metadata: Metadata = {
     'Patterns Chat brings your team, conversations, and tools into one powerful workspace. Chat, meet, share and get things done — all in one place.',
   icons: {
     icon: [
-      { url: '/patterns-icon.png', sizes: '32x32', type: 'image/png' },
-      { url: '/patterns-icon.png', sizes: '192x192', type: 'image/png' },
+      { url: '/favicon.ico?v=2', sizes: '48x48', type: 'image/x-icon' },
+      { url: '/patterns-icon.png?v=2', sizes: '256x256', type: 'image/png' },
     ],
-    shortcut: '/patterns-icon.png',
-    apple: '/patterns-icon.png',
+    shortcut: '/favicon.ico?v=2',
+    apple: '/patterns-icon.png?v=2',
   },
 };
 
@@ -37,6 +37,11 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
+      <head>
+        <link rel="icon" href="/favicon.ico?v=2" sizes="any" />
+        <link rel="icon" type="image/png" sizes="256x256" href="/patterns-icon.png?v=2" />
+        <link rel="apple-touch-icon" href="/patterns-icon.png?v=2" />
+      </head>
       <body className="min-h-full flex flex-col bg-white text-slate-900 selection:bg-indigo-500 selection:text-white">
         <AuthProvider>{children}</AuthProvider>
       </body>

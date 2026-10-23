@@ -132,9 +132,9 @@ export default function WorkspacesPage() {
         <div className="w-full flex h-16 items-center justify-between px-4 sm:px-8">
           <Link href="/workspaces" className="flex items-center gap-2.5 group">
             <img
-              src="/patterns-icon.png"
+              src="/patterns-icon.png?v=2"
               alt="Patterns"
-              className="h-8 w-auto object-contain transition-transform group-hover:scale-105"
+              className="h-8 w-auto object-contain transition-transform group-hover:scale-105 drop-shadow-2xs"
             />
             <div className="flex items-center gap-1 font-black text-xl tracking-tight text-slate-900">
               <span>Patterns</span>

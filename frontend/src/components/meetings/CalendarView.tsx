@@ -22,6 +22,8 @@ import {
   Zap,
   Crown,
   Search,
+  ListFilter,
+  Menu,
 } from 'lucide-react';
 import { User, WorkspaceMember, WorkspaceRole, Meeting } from '@/types/auth';
 import { ROLE_CONFIGS, canInviteMembers } from '@/lib/roles';
@@ -38,6 +40,7 @@ interface CalendarViewProps {
   onStartInstantMeeting: (meetingTitle?: string, channelId?: string) => void;
   onJoinMeeting: (meeting: Meeting) => void;
   onClose?: () => void;
+  onToggleSidebar?: () => void;
 }
 
 const WEEKDAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
@@ -65,7 +68,7 @@ function getRelativeDay(date: Date): string {
   if (diff === 0) return 'Today';
   if (diff === 1) return 'Tomorrow';
   if (diff === -1) return 'Yesterday';
-  return date.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
+  return date.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
 export function CalendarView({
@@ -78,11 +81,13 @@ export function CalendarView({
   onStartInstantMeeting,
   onJoinMeeting,
   onClose,
+  onToggleSidebar,
 }: CalendarViewProps) {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterTab, setFilterTab] = useState<'upcoming' | 'all' | 'past'>('upcoming');
   const [searchQuery, setSearchQuery] = useState('');
+  const [mobileTab, setMobileTab] = useState<'calendar' | 'agenda'>('agenda');
 
   // Calendar state
   const [calendarDate, setCalendarDate] = useState(new Date());
@@ -98,76 +103,86 @@ export function CalendarView({
   const [duration, setDuration] = useState(30);
   const [selectedChannelId, setSelectedChannelId] = useState<string>('');
   const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
+  const [memberSearch, setMemberSearch] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [copiedLinkMeetingId, setCopiedLinkMeetingId] = useState<string | null>(null);
-  const [memberSearch, setMemberSearch] = useState('');
 
   const canSchedule = canInviteMembers(currentUserRole);
-  const now = new Date();
 
-  useEffect(() => {
-    loadMeetings();
-  }, [workspaceId, token]);
-
-  async function loadMeetings() {
+  const fetchMeetings = async () => {
     if (!workspaceId || !token) return;
-    setLoading(true);
     try {
-      const res = await fetch(`${API_URL}/workspaces/${workspaceId}/meetings`, {
+      const res = await fetch(`${API_URL}/meetings/workspace/${workspaceId}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (res.ok) setMeetings(await res.json());
-    } catch (e) {
-      console.error('Failed to load meetings:', e);
+      if (res.ok) {
+        const data = await res.json();
+        setMeetings(data);
+      }
+    } catch (err) {
+      console.warn('Failed to load meetings:', err);
     } finally {
       setLoading(false);
     }
-  }
+  };
 
-  function openCreateModal() {
+  useEffect(() => {
+    fetchMeetings();
+    const interval = setInterval(fetchMeetings, 15000);
+    return () => clearInterval(interval);
+  }, [workspaceId, token]);
+
+  const openCreateModal = () => {
     setEditingMeeting(null);
     setTitle('');
     setDescription('');
     const d = selectedDay || new Date();
-    if (d < now) {
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      setDate(tomorrow.toISOString().split('T')[0]);
-    } else {
-      setDate(d.toISOString().split('T')[0]);
-    }
-    setTime('14:00');
+    setDate(d.toLocaleDateString('en-CA'));
+    setTime('10:00');
     setDuration(30);
     setSelectedChannelId(channels[0]?.id || '');
-    setSelectedUserIds(members.filter((m) => m.user.id !== currentUser?.id).map((m) => m.user.id));
-    setFormError(null);
+    setSelectedUserIds([]);
     setMemberSearch('');
-    setShowModal(true);
-  }
-
-  function openEditModal(m: Meeting) {
-    setEditingMeeting(m);
-    setTitle(m.title);
-    setDescription(m.description || '');
-    const d = new Date(m.scheduledAt);
-    setDate(d.toISOString().split('T')[0]);
-    setTime(d.toTimeString().slice(0, 5));
-    setDuration(m.duration);
-    setSelectedChannelId(m.channelId || '');
-    setSelectedUserIds(m.participants?.map((p) => p.userId) || []);
     setFormError(null);
-    setMemberSearch('');
     setShowModal(true);
-  }
+  };
 
-  async function handleSubmitMeeting(e: React.FormEvent) {
+  const openEditModal = (meeting: Meeting) => {
+    setEditingMeeting(meeting);
+    setTitle(meeting.title);
+    setDescription(meeting.description || '');
+    const mDate = new Date(meeting.scheduledAt);
+    setDate(mDate.toLocaleDateString('en-CA'));
+    setTime(
+      `${String(mDate.getHours()).padStart(2, '0')}:${String(mDate.getMinutes()).padStart(2, '0')}`,
+    );
+    setDuration(meeting.duration);
+    setSelectedChannelId(meeting.channelId || '');
+    setSelectedUserIds(meeting.participants?.map((p) => p.userId) || []);
+    setMemberSearch('');
+    setFormError(null);
+    setShowModal(true);
+  };
+
+  const handleSubmitMeeting = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim() || !date || !time || !token) return;
+    if (!title.trim() || !date || !time) {
+      setFormError('Please fill in title, date, and time');
+      return;
+    }
+
     setSubmitting(true);
     setFormError(null);
+
+    const scheduledAt = new Date(`${date}T${time}:00`).toISOString();
+
     try {
-      const scheduledAt = new Date(`${date}T${time}:00`).toISOString();
+      const url = editingMeeting
+        ? `${API_URL}/meetings/${editingMeeting.id}`
+        : `${API_URL}/meetings`;
+      const method = editingMeeting ? 'PATCH' : 'POST';
+
       const payload: any = {
         title: title.trim(),
         description: description.trim() || undefined,
@@ -176,98 +191,107 @@ export function CalendarView({
         channelId: selectedChannelId || undefined,
         participantIds: selectedUserIds,
       };
-      let res: Response;
-      if (editingMeeting) {
-        res = await fetch(`${API_URL}/meetings/${editingMeeting.id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify(payload),
-        });
-      } else {
-        res = await fetch(`${API_URL}/workspaces/${workspaceId}/meetings`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify(payload),
-        });
+
+      if (!editingMeeting) {
+        payload.workspaceId = workspaceId;
       }
-      if (res.ok) {
-        setShowModal(false);
-        loadMeetings();
-      } else {
-        const data = await res.json();
-        setFormError(data.message || 'Failed to save meeting');
+
+      const res = await fetch(url, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.message || 'Failed to save meeting');
       }
-    } catch {
-      setFormError('Failed to connect to server');
+
+      await fetchMeetings();
+      setShowModal(false);
+    } catch (err: any) {
+      setFormError(err.message || 'An error occurred while saving the meeting');
     } finally {
       setSubmitting(false);
     }
-  }
+  };
 
-  async function handleDeleteMeeting(meetingId: string) {
+  const handleDeleteMeeting = async (meetingId: string) => {
     if (!confirm('Are you sure you want to cancel this meeting?')) return;
     try {
       const res = await fetch(`${API_URL}/meetings/${meetingId}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (res.ok) setMeetings((prev) => prev.filter((m) => m.id !== meetingId));
-    } catch (e) {
-      console.error('Failed to cancel meeting:', e);
+      if (res.ok) {
+        setMeetings((prev) => prev.filter((m) => m.id !== meetingId));
+      }
+    } catch (err) {
+      console.warn('Failed to delete meeting:', err);
     }
-  }
+  };
 
-  function copyMeetingLink(m: Meeting) {
-    const link = `${window.location.origin}/workspace/${workspaceId}?meeting=${m.id}`;
+  const copyMeetingLink = (m: Meeting) => {
+    const link = `${window.location.origin}/workspace/${workspaceId}?meetingId=${m.id}`;
     navigator.clipboard.writeText(link);
     setCopiedLinkMeetingId(m.id);
-    setTimeout(() => setCopiedLinkMeetingId(null), 2500);
-  }
+    setTimeout(() => setCopiedLinkMeetingId(null), 2000);
+  };
 
-  // Calendar grid computation
+  // Calendar math
+  const now = new Date();
+  const year = calendarDate.getFullYear();
+  const month = calendarDate.getMonth();
+  const firstDayOfWeek = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
   const calendarDays = useMemo(() => {
-    const year = calendarDate.getFullYear();
-    const month = calendarDate.getMonth();
-    const firstDay = new Date(year, month, 1).getDay();
-    const daysInMonth = new Date(year, month + 1, 0).getDate();
     const days: (Date | null)[] = [];
-    for (let i = 0; i < firstDay; i++) days.push(null);
-    for (let d = 1; d <= daysInMonth; d++) days.push(new Date(year, month, d));
+    for (let i = 0; i < firstDayOfWeek; i++) {
+      days.push(null);
+    }
+    for (let d = 1; d <= daysInMonth; d++) {
+      days.push(new Date(year, month, d));
+    }
     return days;
-  }, [calendarDate]);
+  }, [year, month, firstDayOfWeek, daysInMonth]);
 
-  // Meetings indexed by date string "YYYY-MM-DD"
   const meetingsByDay = useMemo(() => {
     const map = new Map<string, Meeting[]>();
     meetings.forEach((m) => {
-      const key = new Date(m.scheduledAt).toLocaleDateString('en-CA'); // YYYY-MM-DD
+      const d = new Date(m.scheduledAt);
+      const key = d.toLocaleDateString('en-CA');
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(m);
     });
     return map;
   }, [meetings]);
 
-  // Filtered list for right panel
   const filteredMeetings = useMemo(() => {
     return meetings
       .filter((m) => {
-        const d = new Date(m.scheduledAt);
-        const isPast = d.getTime() + m.duration * 60000 < now.getTime();
-        const matchesSearch =
-          m.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          (m.channel?.name && m.channel.name.toLowerCase().includes(searchQuery.toLowerCase())) ||
-          (m.host?.name && m.host.name.toLowerCase().includes(searchQuery.toLowerCase()));
-        if (!matchesSearch) return false;
+        const mDate = new Date(m.scheduledAt);
+        const isLive = m.status === 'LIVE';
+        const isPast = mDate.getTime() + m.duration * 60000 < now.getTime() && !isLive;
 
-        // If a day is selected on calendar, filter to that day only
         if (selectedDay) {
           const selKey = selectedDay.toLocaleDateString('en-CA');
-          const meetKey = d.toLocaleDateString('en-CA');
-          if (selKey !== meetKey) return false;
+          const mKey = mDate.toLocaleDateString('en-CA');
+          if (selKey !== mKey) return false;
         } else {
-          if (filterTab === 'upcoming') return !isPast || m.status === 'LIVE';
-          if (filterTab === 'past') return isPast && m.status !== 'LIVE';
+          if (filterTab === 'upcoming' && isPast) return false;
+          if (filterTab === 'past' && !isPast) return false;
         }
+
+        const matchesSearch =
+          m.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+          (m.channel && m.channel.name.toLowerCase().includes(searchQuery.toLowerCase())) ||
+          (m.host && m.host.name.toLowerCase().includes(searchQuery.toLowerCase()));
+        if (!matchesSearch) return false;
+
         return true;
       })
       .sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
@@ -288,47 +312,64 @@ export function CalendarView({
   const selectedKey = selectedDay?.toLocaleDateString('en-CA');
 
   return (
-    <div className="flex-1 flex flex-col h-full overflow-hidden" style={{ background: 'linear-gradient(135deg, #0A0D14 0%, #0F1623 100%)', fontFamily: "'Inter', system-ui, sans-serif" }}>
+    <div className="flex-1 flex flex-col h-full overflow-hidden bg-white text-slate-900 select-none">
       {/* ── TOP HEADER ──────────────────────────────────────────────── */}
-      <div className="px-5 py-4 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#111827]/80 backdrop-blur-md">
-        <div className="flex items-center gap-3">
-          <div className="h-9 w-9 rounded-2xl bg-gradient-to-tr from-violet-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-violet-600/20">
-            <CalendarDays className="h-5 w-5 text-white" />
+      <div className="h-16 px-4 sm:px-6 border-b border-slate-200/90 flex items-center justify-between shrink-0 bg-white shadow-2xs">
+        <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+          {onToggleSidebar && (
+            <button
+              type="button"
+              onClick={onToggleSidebar}
+              className="p-2 -ml-1 rounded-xl text-slate-600 hover:text-slate-900 hover:bg-slate-100 md:hidden transition-colors shrink-0"
+              title="Open channels & messages"
+            >
+              <Menu className="h-5 w-5" />
+            </button>
+          )}
+          <div className="h-9 w-9 rounded-xl bg-indigo-50 border border-indigo-200/80 flex items-center justify-center text-indigo-600 shadow-2xs shrink-0">
+            <CalendarDays className="h-5 w-5" />
           </div>
-          <div>
-            <h1 className="text-base font-bold text-white flex items-center gap-2">
-              Calendar & Meetings
-              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
-                currentUserRole === 'OWNER' ? 'bg-amber-500/15 border-amber-500/30 text-amber-300' :
-                currentUserRole === 'ADMIN' ? 'bg-violet-500/15 border-violet-500/30 text-violet-300' :
-                'bg-slate-700/50 border-slate-600/40 text-slate-400'
-              }`}>
-                {currentUserRole === 'OWNER' ? '👑 Super Admin' : currentUserRole === 'ADMIN' ? '🛡 Admin' : currentUserRole === 'MANAGER' ? '⚡ Manager' : currentUserRole === 'TEAM_LEAD' ? '🎯 Team Lead' : 'Team'}
+          <div className="min-w-0">
+            <h1 className="text-sm sm:text-base md:text-lg font-black text-slate-900 flex items-center gap-2 truncate">
+              <span className="truncate">Calendar & Meetings</span>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full border bg-indigo-50 border-indigo-200 text-indigo-700 shrink-0">
+                {currentUserRole === 'OWNER'
+                  ? '👑 Super Admin'
+                  : currentUserRole === 'ADMIN'
+                  ? '🛡 Admin'
+                  : currentUserRole === 'MANAGER'
+                  ? '⚡ Manager'
+                  : currentUserRole === 'TEAM_LEAD'
+                  ? '🎯 Team Lead'
+                  : 'Team'}
               </span>
             </h1>
-            <p className="text-[11px] text-slate-500 mt-0.5">Video calls, project syncs &amp; team conferences</p>
+            <p className="text-xs text-slate-500 font-medium truncate hidden sm:block">
+              Schedule, organize team video meetings, and manage participants
+            </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           {/* Instant meeting */}
           <button
             type="button"
             onClick={() => onStartInstantMeeting('Instant Team Meeting')}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-300 text-xs font-bold transition-all"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 sm:px-3.5 sm:py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 border border-emerald-200/80 text-emerald-700 text-xs font-bold transition-all shadow-2xs"
+            title="Start an instant call"
           >
             <Zap className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Start Now</span>
+            <span className="hidden md:inline">Start Now</span>
           </button>
 
           {canSchedule && (
             <button
               type="button"
               onClick={openCreateModal}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold shadow-lg shadow-violet-600/20 transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 sm:px-4 sm:py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:scale-[0.99] text-white text-xs font-bold shadow-md shadow-indigo-600/20 transition-all"
             >
-              <Plus className="h-4 w-4" />
-              <span>Schedule</span>
+              <Plus className="h-3.5 w-3.5" />
+              <span className="hidden xs:inline">Schedule</span>
             </button>
           )}
 
@@ -336,51 +377,96 @@ export function CalendarView({
             <button
               type="button"
               onClick={onClose}
-              className="p-2 rounded-xl text-slate-500 hover:text-white hover:bg-white/8 transition-colors"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 sm:px-3 sm:py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors"
+              title="Back to chat"
             >
-              <X className="h-5 w-5" />
+              <X className="h-4 w-4" />
+              <span className="hidden sm:inline">Back to Chat</span>
             </button>
           )}
         </div>
       </div>
 
-      {/* ── MAIN LAYOUT ─────────────────────────────────────────────── */}
-      <div className="flex-1 flex min-h-0 overflow-hidden">
+      {/* ── MOBILE VIEW TOGGLER (< lg) ────────────────────────────── */}
+      <div className="lg:hidden px-4 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0">
+        <div className="flex items-center p-1 bg-white rounded-xl border border-slate-200 w-full shadow-2xs">
+          <button
+            type="button"
+            onClick={() => setMobileTab('agenda')}
+            className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${
+              mobileTab === 'agenda'
+                ? 'bg-indigo-600 text-white shadow-2xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            📋 Meetings & Agenda
+          </button>
+          <button
+            type="button"
+            onClick={() => setMobileTab('calendar')}
+            className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${
+              mobileTab === 'calendar'
+                ? 'bg-indigo-600 text-white shadow-2xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            📅 Monthly Calendar
+          </button>
+        </div>
+      </div>
 
-        {/* ── LEFT: CALENDAR GRID ─────────────────────────────────── */}
-        <div className="w-72 shrink-0 border-r border-white/5 flex flex-col bg-[#0D1117] hidden lg:flex">
-          {/* Month nav */}
-          <div className="px-4 py-3 flex items-center justify-between border-b border-white/5">
-            <button onClick={prevMonth} className="p-1.5 rounded-lg text-slate-500 hover:text-white hover:bg-white/8 transition-colors">
+      {/* ── MAIN LAYOUT: PURE WHITE & RESPONSIVE ──────────────────── */}
+      <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden bg-white">
+        {/* ── LEFT COLUMN: PURE WHITE MONTHLY CALENDAR GRID ───────── */}
+        <div
+          className={`w-full lg:w-80 shrink-0 border-b lg:border-b-0 lg:border-r border-slate-200/90 flex flex-col bg-slate-50/70 p-4 ${
+            mobileTab === 'calendar' ? 'flex' : 'hidden lg:flex'
+          }`}
+        >
+          {/* Month Navigation */}
+          <div className="flex items-center justify-between pb-3 border-b border-slate-200/80">
+            <button
+              type="button"
+              onClick={prevMonth}
+              className="p-1.5 rounded-xl bg-white border border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors shadow-2xs"
+              title="Previous month"
+            >
               <ChevronLeft className="h-4 w-4" />
             </button>
             <div className="text-center">
-              <div className="text-sm font-bold text-white">
-                {MONTH_NAMES[calendarDate.getMonth()]}
+              <div className="text-sm font-extrabold text-slate-900">
+                {MONTH_NAMES[calendarDate.getMonth()]} {calendarDate.getFullYear()}
               </div>
-              <div className="text-[11px] text-slate-500">{calendarDate.getFullYear()}</div>
             </div>
-            <button onClick={nextMonth} className="p-1.5 rounded-lg text-slate-500 hover:text-white hover:bg-white/8 transition-colors">
+            <button
+              type="button"
+              onClick={nextMonth}
+              className="p-1.5 rounded-xl bg-white border border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors shadow-2xs"
+              title="Next month"
+            >
               <ChevronRight className="h-4 w-4" />
             </button>
           </div>
 
           {/* Weekday headers */}
-          <div className="grid grid-cols-7 px-3 pt-3 pb-1">
+          <div className="grid grid-cols-7 pt-3 pb-1 text-center">
             {WEEKDAYS.map((d) => (
-              <div key={d} className="text-center text-[10px] font-bold text-slate-600 py-1">{d}</div>
+              <div key={d} className="text-[11px] font-bold text-slate-400 py-1 uppercase">
+                {d}
+              </div>
             ))}
           </div>
 
-          {/* Day grid */}
-          <div className="grid grid-cols-7 px-3 pb-3 gap-y-1">
+          {/* Day Grid */}
+          <div className="grid grid-cols-7 gap-1 pt-1 pb-3">
             {calendarDays.map((day, idx) => {
-              if (!day) return <div key={idx} />;
+              if (!day) return <div key={idx} className="h-8 w-8 mx-auto" />;
               const key = day.toLocaleDateString('en-CA');
               const dayMeetings = meetingsByDay.get(key) || [];
               const isToday = key === todayKey;
               const isSelected = key === selectedKey;
               const isLive = dayMeetings.some((m) => m.status === 'LIVE');
+
               return (
                 <button
                   key={idx}
@@ -390,78 +476,109 @@ export function CalendarView({
                       setSelectedDay(null);
                     } else {
                       setSelectedDay(day);
+                      setMobileTab('agenda');
                     }
                   }}
-                  className={`relative h-8 w-8 mx-auto rounded-xl text-xs font-semibold transition-all flex flex-col items-center justify-center ${
+                  className={`relative h-8 w-8 mx-auto rounded-xl text-xs font-bold transition-all flex flex-col items-center justify-center ${
                     isSelected
-                      ? 'bg-violet-600 text-white shadow-lg shadow-violet-600/30'
+                      ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
                       : isToday
-                      ? 'bg-white/10 text-white font-bold border border-white/20'
-                      : 'text-slate-400 hover:text-white hover:bg-white/8'
+                      ? 'bg-indigo-50 text-indigo-700 border-2 border-indigo-400 font-black'
+                      : 'text-slate-700 hover:bg-white hover:text-indigo-600 hover:shadow-2xs'
                   }`}
                 >
                   {day.getDate()}
                   {dayMeetings.length > 0 && (
-                    <span className={`absolute bottom-0.5 h-1 w-1 rounded-full ${isLive ? 'bg-emerald-400' : 'bg-violet-400'} ${isSelected ? 'bg-white' : ''}`} />
+                    <span
+                      className={`absolute bottom-0.5 h-1 w-1 rounded-full ${
+                        isLive ? 'bg-emerald-500' : isSelected ? 'bg-white' : 'bg-indigo-600'
+                      }`}
+                    />
                   )}
                 </button>
               );
             })}
           </div>
 
-          {/* Today button */}
-          <div className="px-3 pb-3">
+          {/* Go to Today button */}
+          <div className="pt-2">
             <button
               type="button"
               onClick={goToToday}
-              className="w-full py-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white text-xs font-semibold transition-colors border border-white/5"
+              className="w-full py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-700 hover:text-indigo-600 font-bold text-xs transition-colors border border-slate-200 shadow-2xs"
             >
               Go to Today
             </button>
           </div>
 
-          {/* Mini stats */}
-          <div className="mt-auto border-t border-white/5 px-4 py-4 space-y-2">
+          {/* Mini Stats Summary */}
+          <div className="mt-auto pt-4 border-t border-slate-200/80 space-y-2">
             {[
-              { label: 'Upcoming', count: meetings.filter((m) => new Date(m.scheduledAt).getTime() + m.duration * 60000 >= now.getTime() && m.status !== 'LIVE').length, color: 'text-violet-400' },
-              { label: 'Live Now', count: meetings.filter((m) => m.status === 'LIVE').length, color: 'text-emerald-400' },
-              { label: 'Total', count: meetings.length, color: 'text-slate-400' },
+              {
+                label: 'Upcoming Meetings',
+                count: meetings.filter(
+                  (m) =>
+                    new Date(m.scheduledAt).getTime() + m.duration * 60000 >= now.getTime() &&
+                    m.status !== 'LIVE',
+                ).length,
+                color: 'text-indigo-600',
+              },
+              {
+                label: 'Live Now',
+                count: meetings.filter((m) => m.status === 'LIVE').length,
+                color: 'text-emerald-600 font-bold',
+              },
+              {
+                label: 'Total Scheduled',
+                count: meetings.length,
+                color: 'text-slate-800',
+              },
             ].map(({ label, count, color }) => (
-              <div key={label} className="flex items-center justify-between text-[11px]">
-                <span className="text-slate-500">{label}</span>
+              <div key={label} className="flex items-center justify-between text-xs">
+                <span className="text-slate-500 font-medium">{label}</span>
                 <span className={`font-bold ${color}`}>{count}</span>
               </div>
             ))}
           </div>
         </div>
 
-        {/* ── RIGHT: MEETINGS LIST ─────────────────────────────────── */}
-        <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-          {/* Filter / Search bar */}
-          <div className="px-5 py-3 border-b border-white/5 flex items-center gap-3 bg-[#0F1623]/80 backdrop-blur-sm shrink-0">
-            {/* Day label */}
+        {/* ── RIGHT COLUMN: PURE WHITE AGENDA & MEETINGS LIST ─────── */}
+        <div
+          className={`flex-1 flex flex-col min-w-0 overflow-hidden bg-white ${
+            mobileTab === 'agenda' ? 'flex' : 'hidden lg:flex'
+          }`}
+        >
+          {/* Subheader: Selected day label, filter tabs, and search */}
+          <div className="px-4 sm:px-6 py-3 border-b border-slate-200/80 flex flex-wrap items-center justify-between gap-3 bg-white shrink-0">
+            {/* Day label or filter switcher */}
             {selectedDay ? (
               <div className="flex items-center gap-2 min-w-0">
-                <span className="text-sm font-bold text-white">{getRelativeDay(selectedDay)}</span>
+                <span className="text-sm sm:text-base font-black text-slate-900">
+                  {getRelativeDay(selectedDay)}
+                </span>
+                <span className="text-xs text-slate-400 font-mono hidden sm:inline">
+                  ({selectedDay.toLocaleDateString()})
+                </span>
                 <button
                   type="button"
                   onClick={() => setSelectedDay(null)}
-                  className="text-slate-500 hover:text-white p-0.5 rounded-md"
+                  className="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+                  title="View all upcoming"
                 >
-                  <X className="h-3.5 w-3.5" />
+                  <X className="h-4 w-4" />
                 </button>
               </div>
             ) : (
-              <div className="flex items-center gap-1.5 flex-wrap shrink-0">
+              <div className="flex items-center p-1 bg-slate-100/90 rounded-xl border border-slate-200/80 shrink-0">
                 {(['upcoming', 'all', 'past'] as const).map((tab) => (
                   <button
                     key={tab}
                     type="button"
                     onClick={() => setFilterTab(tab)}
-                    className={`px-3 py-1.5 rounded-xl text-[11px] font-bold capitalize transition-all ${
+                    className={`px-3 py-1 rounded-lg text-xs font-bold capitalize transition-all ${
                       filterTab === tab
-                        ? 'bg-violet-600 text-white'
-                        : 'text-slate-500 hover:text-white hover:bg-white/8'
+                        ? 'bg-white text-indigo-600 shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
                     {tab}
@@ -470,44 +587,49 @@ export function CalendarView({
               </div>
             )}
 
-            <div className="ml-auto flex items-center gap-2 bg-white/5 rounded-xl border border-white/8 px-3 py-1.5 min-w-0 max-w-[220px]">
-              <Search className="h-3.5 w-3.5 text-slate-500 shrink-0" />
+            {/* Search Input */}
+            <div className="flex items-center gap-2 bg-slate-50 rounded-xl border border-slate-200 px-3 py-1.5 w-full sm:w-60 shadow-2xs">
+              <Search className="h-3.5 w-3.5 text-slate-400 shrink-0" />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search..."
-                className="bg-transparent text-xs text-slate-200 placeholder-slate-600 outline-none w-full"
+                placeholder="Search meetings..."
+                className="bg-transparent text-xs text-slate-900 placeholder:text-slate-400 outline-none w-full"
               />
             </div>
           </div>
 
-          {/* Meetings list */}
-          <div className="flex-1 overflow-y-auto p-5 space-y-3">
+          {/* Meeting cards container */}
+          <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-3.5 bg-slate-50/30">
             {loading ? (
-              <div className="py-24 flex flex-col items-center justify-center text-slate-600">
-                <Loader2 className="h-8 w-8 animate-spin text-violet-500 mb-3" />
-                <span className="text-xs">Loading schedule...</span>
+              <div className="py-24 flex flex-col items-center justify-center text-slate-400">
+                <Loader2 className="h-8 w-8 animate-spin text-indigo-600 mb-3" />
+                <span className="text-xs font-medium">Loading schedule...</span>
               </div>
             ) : filteredMeetings.length === 0 ? (
-              <div className="py-20 flex flex-col items-center justify-center text-center">
-                <div className="h-16 w-16 rounded-3xl bg-violet-600/10 border border-violet-500/20 flex items-center justify-center mb-4">
-                  <CalendarIcon className="h-8 w-8 text-violet-500/60" />
+              <div className="py-20 flex flex-col items-center justify-center text-center px-4">
+                <div className="h-16 w-16 rounded-3xl bg-indigo-50 border border-indigo-200/80 flex items-center justify-center text-indigo-600 mb-3 shadow-2xs">
+                  <CalendarIcon className="h-8 w-8" />
                 </div>
-                <h3 className="text-sm font-bold text-slate-400">
-                  {selectedDay ? `No meetings on ${getRelativeDay(selectedDay)}` : 'No meetings found'}
+                <h3 className="text-sm sm:text-base font-extrabold text-slate-900">
+                  {selectedDay
+                    ? `No meetings scheduled for ${getRelativeDay(selectedDay)}`
+                    : 'No meetings found'}
                 </h3>
-                <p className="text-[11px] text-slate-600 mt-1 max-w-xs">
-                  {searchQuery ? 'Try a different search term' : 'Plan project check-ins, sprint reviews, or team syncs'}
+                <p className="text-xs text-slate-500 mt-1 max-w-sm leading-relaxed">
+                  {searchQuery
+                    ? 'No meetings match your search query. Try searching with a different term.'
+                    : 'Plan team standups, sprint reviews, client demos, or one-on-ones.'}
                 </p>
                 {canSchedule && (
                   <button
                     type="button"
                     onClick={openCreateModal}
-                    className="mt-5 flex items-center gap-2 px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold shadow-lg shadow-violet-600/20 transition-all"
+                    className="mt-5 flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-md shadow-indigo-600/20 transition-all"
                   >
                     <Plus className="h-4 w-4" />
-                    Schedule Meeting
+                    <span>Schedule Meeting</span>
                   </button>
                 )}
               </div>
@@ -523,150 +645,166 @@ export function CalendarView({
                 return (
                   <div
                     key={m.id}
-                    className={`rounded-2xl border transition-all group ${
+                    className={`rounded-2xl border transition-all p-4 bg-white ${
                       isLive
-                        ? 'bg-gradient-to-br from-emerald-500/10 to-[#0F1623] border-emerald-500/30 shadow-lg shadow-emerald-500/5'
+                        ? 'border-emerald-300 shadow-md shadow-emerald-500/10 ring-1 ring-emerald-400'
                         : isPast
-                        ? 'bg-[#0D1117]/80 border-white/5 opacity-60'
-                        : 'bg-[#111827] border-white/8 hover:border-violet-500/30'
+                        ? 'border-slate-200/60 opacity-70 bg-slate-50/50'
+                        : 'border-slate-200 hover:border-indigo-300 hover:shadow-sm'
                     }`}
                   >
-                    <div className="p-4">
-                      {/* Row 1: Channel tag + status */}
-                      <div className="flex items-center justify-between gap-2 mb-2.5">
-                        <div className="flex items-center gap-1.5 text-[11px] font-bold text-violet-400 bg-violet-500/10 px-2 py-0.5 rounded-lg border border-violet-500/20 truncate max-w-[160px]">
-                          <Hash className="h-3 w-3 shrink-0" />
-                          <span className="truncate">{m.channel?.name || 'General'}</span>
-                        </div>
-
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          {isLive && (
-                            <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-500 text-white animate-pulse">
-                              <span className="h-1.5 w-1.5 rounded-full bg-white" />
-                              LIVE
-                            </span>
-                          )}
-                          {!isLive && !isPast && minsUntil <= 15 && minsUntil > 0 && (
-                            <span className="flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-bold bg-amber-500/20 border border-amber-500/40 text-amber-300">
-                              Starts in {minsUntil}m
-                            </span>
-                          )}
-                          {isPast && (
-                            <span className="px-2 py-1 rounded-full text-[10px] font-semibold bg-white/5 text-slate-600 border border-white/5">
-                              Ended
-                            </span>
-                          )}
-                          {!isLive && !isPast && minsUntil > 15 && (
-                            <span className="px-2 py-1 rounded-full text-[10px] font-semibold bg-white/5 text-slate-500 border border-white/5">
-                              Scheduled
-                            </span>
-                          )}
-                        </div>
+                    {/* Top Row: Channel Badge & Status Tag */}
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-indigo-700 bg-indigo-50 border border-indigo-200/80 px-2.5 py-0.5 rounded-lg truncate max-w-[180px]">
+                        <Hash className="h-3 w-3 shrink-0" />
+                        <span className="truncate">{m.channel?.name || 'General'}</span>
                       </div>
 
-                      {/* Row 2: Title */}
-                      <h3 className={`font-bold text-sm leading-snug line-clamp-1 ${isPast ? 'text-slate-500' : 'text-white'}`}>
-                        {m.title}
-                      </h3>
-                      {m.description && (
-                        <p className="text-[11px] text-slate-500 mt-0.5 line-clamp-1">{m.description}</p>
-                      )}
-
-                      {/* Row 3: Date/time + duration */}
-                      <div className="mt-3 flex items-center gap-3 text-[11px] text-slate-500">
-                        <span className="flex items-center gap-1">
-                          <CalendarIcon className="h-3 w-3 text-slate-600 shrink-0" />
-                          {getRelativeDay(meetingDate)}
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <Clock className="h-3 w-3 text-slate-600 shrink-0" />
-                          {formatTime(meetingDate)} · {formatDuration(m.duration)}
-                        </span>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {isLive && (
+                          <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500 text-white animate-pulse">
+                            <span className="h-1.5 w-1.5 rounded-full bg-white" />
+                            LIVE NOW
+                          </span>
+                        )}
+                        {!isLive && !isPast && minsUntil <= 15 && minsUntil > 0 && (
+                          <span className="flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-50 border border-amber-300 text-amber-700">
+                            Starts in {minsUntil}m
+                          </span>
+                        )}
+                        {isPast && (
+                          <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-500 border border-slate-200">
+                            Ended
+                          </span>
+                        )}
+                        {!isLive && !isPast && minsUntil > 15 && (
+                          <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                            Scheduled
+                          </span>
+                        )}
                       </div>
+                    </div>
 
-                      {/* Row 4: Host + participants + actions */}
-                      <div className="mt-3 flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <img
-                            src={m.host?.avatarUrl || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(m.host?.name || 'H')}`}
-                            alt={m.host?.name || 'Host'}
-                            className="h-6 w-6 rounded-lg object-cover border border-white/10"
-                          />
-                          <div>
-                            <div className="text-[10px] text-slate-600 leading-none">Scheduled by</div>
-                            <div className="text-[11px] font-bold text-slate-300 leading-none mt-0.5">{m.host?.name || 'Teammate'}</div>
+                    {/* Middle Row: Title & Description */}
+                    <h3 className="font-extrabold text-sm sm:text-base text-slate-900 leading-snug line-clamp-1">
+                      {m.title}
+                    </h3>
+                    {m.description && (
+                      <p className="text-xs text-slate-500 mt-1 line-clamp-2 leading-relaxed">
+                        {m.description}
+                      </p>
+                    )}
+
+                    {/* Time & Duration Row */}
+                    <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500 font-medium">
+                      <span className="flex items-center gap-1.5">
+                        <CalendarIcon className="h-3.5 w-3.5 text-indigo-600 shrink-0" />
+                        <span className="text-slate-800 font-semibold">{getRelativeDay(meetingDate)}</span>
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        <Clock className="h-3.5 w-3.5 text-indigo-600 shrink-0" />
+                        <span>{formatTime(meetingDate)}</span>
+                        <span>•</span>
+                        <span>{formatDuration(m.duration)}</span>
+                      </span>
+                    </div>
+
+                    {/* Bottom Row: Host info & Action buttons */}
+                    <div className="mt-4 pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <img
+                          src={
+                            m.host?.avatarUrl ||
+                            `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(
+                              m.host?.name || 'User',
+                            )}`
+                          }
+                          alt={m.host?.name || 'Host'}
+                          className="h-6 w-6 rounded-full object-cover border border-slate-200"
+                        />
+                        <div className="min-w-0">
+                          <span className="text-[11px] text-slate-400 block leading-none">
+                            Host
+                          </span>
+                          <span className="text-xs font-bold text-slate-800 truncate block leading-tight mt-0.5">
+                            {m.host?.name || 'Teammate'}
+                          </span>
+                        </div>
+
+                        {/* Attendees Avatars */}
+                        {m.participants && m.participants.length > 0 && (
+                          <div className="flex -space-x-1.5 ml-3">
+                            {m.participants.slice(0, 4).map((p, idx) => (
+                              <img
+                                key={idx}
+                                src={
+                                  p.user?.avatarUrl ||
+                                  `https://api.dicebear.com/7.x/initials/svg?seed=User`
+                                }
+                                alt={p.user?.name || 'User'}
+                                title={p.user?.name}
+                                className="h-5 w-5 rounded-full border-2 border-white object-cover"
+                              />
+                            ))}
+                            {m.participants.length > 4 && (
+                              <span className="h-5 w-5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-bold flex items-center justify-center border-2 border-white">
+                                +{m.participants.length - 4}
+                              </span>
+                            )}
                           </div>
+                        )}
+                      </div>
 
-                          {/* Participant avatars */}
-                          {m.participants && m.participants.length > 0 && (
-                            <div className="flex -space-x-1.5 ml-2">
-                              {m.participants.slice(0, 4).map((p, idx) => (
-                                <img
-                                  key={idx}
-                                  src={p.user?.avatarUrl || `https://api.dicebear.com/7.x/initials/svg?seed=User`}
-                                  alt={p.user?.name || 'User'}
-                                  title={p.user?.name}
-                                  className="h-5 w-5 rounded-md border border-[#111827] object-cover"
-                                />
-                              ))}
-                              {m.participants.length > 4 && (
-                                <span className="h-5 w-5 rounded-md bg-white/10 text-slate-400 text-[9px] font-bold flex items-center justify-center border border-[#111827]">
-                                  +{m.participants.length - 4}
-                                </span>
-                              )}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Action buttons */}
-                        <div className="flex items-center gap-1">
-                          {!isPast && (
-                            <button
-                              type="button"
-                              onClick={() => onJoinMeeting(m)}
-                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all ${
-                                isLive
-                                  ? 'bg-emerald-500 hover:bg-emerald-400 text-white shadow-md shadow-emerald-500/20'
-                                  : 'bg-violet-600 hover:bg-violet-500 text-white shadow-md shadow-violet-600/20'
-                              }`}
-                            >
-                              <Video className="h-3.5 w-3.5" />
-                              <span>{isLive ? 'Join' : 'Start'}</span>
-                            </button>
-                          )}
-
+                      {/* Actions */}
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {!isPast && (
                           <button
                             type="button"
-                            onClick={() => copyMeetingLink(m)}
-                            className="p-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-500 hover:text-white transition-colors"
-                            title="Copy meeting link"
+                            onClick={() => onJoinMeeting(m)}
+                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-xs ${
+                              isLive
+                                ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                                : 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                            }`}
                           >
-                            {copiedLinkMeetingId === m.id
-                              ? <Check className="h-3.5 w-3.5 text-emerald-400" />
-                              : <Copy className="h-3.5 w-3.5" />}
+                            <Video className="h-3.5 w-3.5" />
+                            <span>{isLive ? 'Join Meeting' : 'Start'}</span>
                           </button>
+                        )}
 
-                          {canEditThis && !isPast && (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => openEditModal(m)}
-                                className="p-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-500 hover:text-violet-400 transition-colors opacity-0 group-hover:opacity-100"
-                                title="Edit meeting"
-                              >
-                                <Pencil className="h-3.5 w-3.5" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteMeeting(m.id)}
-                                className="p-1.5 rounded-xl bg-white/5 hover:bg-rose-500/20 text-slate-500 hover:text-rose-400 transition-colors opacity-0 group-hover:opacity-100"
-                                title="Cancel meeting"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </button>
-                            </>
+                        <button
+                          type="button"
+                          onClick={() => copyMeetingLink(m)}
+                          className="p-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-900 transition-colors"
+                          title="Copy meeting link"
+                        >
+                          {copiedLinkMeetingId === m.id ? (
+                            <Check className="h-4 w-4 text-emerald-600" />
+                          ) : (
+                            <Copy className="h-4 w-4" />
                           )}
-                        </div>
+                        </button>
+
+                        {canEditThis && !isPast && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => openEditModal(m)}
+                              className="p-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-indigo-600 transition-colors"
+                              title="Edit meeting"
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteMeeting(m.id)}
+                              className="p-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-600 transition-colors"
+                              title="Cancel meeting"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -677,100 +815,107 @@ export function CalendarView({
         </div>
       </div>
 
-      {/* ── SCHEDULE / EDIT MODAL ────────────────────────────────────── */}
+      {/* ── SCHEDULE / EDIT MEETING MODAL (PURE WHITE) ─────────────── */}
       {showModal && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-in fade-in duration-150">
-          <div
-            className="w-full max-w-lg rounded-3xl shadow-2xl text-white border border-white/10 animate-in zoom-in-95 duration-200 max-h-[90vh] overflow-y-auto"
-            style={{ background: 'linear-gradient(145deg, #131929 0%, #0F1623 100%)' }}
-          >
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+          <div className="w-full max-w-lg rounded-3xl shadow-2xl bg-white text-slate-900 border border-slate-200 animate-in zoom-in-95 duration-200 max-h-[90vh] overflow-y-auto">
             {/* Modal header */}
-            <div className="px-6 pt-6 pb-4 border-b border-white/8 flex items-center justify-between">
+            <div className="px-6 pt-5 pb-4 border-b border-slate-100 flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <div className="h-9 w-9 rounded-2xl bg-violet-600/20 border border-violet-500/30 flex items-center justify-center text-violet-400">
+                <div className="h-9 w-9 rounded-xl bg-indigo-50 border border-indigo-200/80 flex items-center justify-center text-indigo-600">
                   <CalendarDays className="h-5 w-5" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold text-white">
+                  <h3 className="text-sm sm:text-base font-extrabold text-slate-900">
                     {editingMeeting ? 'Edit Meeting' : 'Schedule Team Meeting'}
                   </h3>
-                  <p className="text-[11px] text-slate-500 mt-0.5">All participants will be notified</p>
+                  <p className="text-xs text-slate-500">
+                    All participants will be notified in the workspace
+                  </p>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setShowModal(false)}
-                className="p-1.5 text-slate-500 hover:text-white hover:bg-white/8 rounded-xl transition-colors"
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors"
               >
                 <X className="h-5 w-5" />
               </button>
             </div>
 
             {formError && (
-              <div className="mx-6 mt-4 rounded-xl bg-rose-500/10 border border-rose-500/30 p-3 text-xs text-rose-400 flex items-center gap-2">
-                <AlertCircle className="h-4 w-4 shrink-0" />
-                {formError}
+              <div className="mx-6 mt-4 rounded-xl bg-rose-50 border border-rose-200 p-3 text-xs text-rose-700 flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0 text-rose-500" />
+                <span>{formError}</span>
               </div>
             )}
 
-            <form onSubmit={handleSubmitMeeting} className="px-6 py-5 space-y-4">
+            <form onSubmit={handleSubmitMeeting} className="px-6 py-4 space-y-3.5">
               {/* Title */}
               <div>
-                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Meeting Title *</label>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Meeting Title <span className="text-indigo-600">*</span>
+                </label>
                 <input
                   type="text"
                   required
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
                   placeholder="e.g. Sprint Planning · Architecture Review"
-                  className="w-full rounded-xl border border-white/10 bg-white/5 px-3.5 py-2.5 text-sm text-white placeholder-slate-600 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500/30 transition-colors"
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all shadow-2xs"
                 />
               </div>
 
               {/* Description */}
               <div>
-                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Agenda / Notes (Optional)</label>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Agenda / Notes (Optional)
+                </label>
                 <textarea
                   rows={2}
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
                   placeholder="What will this meeting cover? Add agenda items..."
-                  className="w-full rounded-xl border border-white/10 bg-white/5 px-3.5 py-2 text-xs text-white placeholder-slate-600 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500/30 transition-colors resize-none"
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all resize-none shadow-2xs"
                 />
               </div>
 
-              {/* Date / Time */}
+              {/* Date & Time */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Date *</label>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Date <span className="text-indigo-600">*</span>
+                  </label>
                   <input
                     type="date"
                     required
                     value={date}
                     onChange={(e) => setDate(e.target.value)}
-                    className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-xs text-white focus:border-violet-500 focus:outline-none"
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs sm:text-sm text-slate-900 focus:border-indigo-500 focus:outline-none shadow-2xs"
                   />
                 </div>
                 <div>
-                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Time *</label>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Time <span className="text-indigo-600">*</span>
+                  </label>
                   <input
                     type="time"
                     required
                     value={time}
                     onChange={(e) => setTime(e.target.value)}
-                    className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-xs text-white focus:border-violet-500 focus:outline-none"
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs sm:text-sm text-slate-900 focus:border-indigo-500 focus:outline-none shadow-2xs"
                   />
                 </div>
               </div>
 
-              {/* Duration / Channel */}
+              {/* Duration & Channel */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Duration</label>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Duration</label>
                   <select
                     value={duration}
                     onChange={(e) => setDuration(Number(e.target.value))}
-                    className="w-full rounded-xl border border-white/10 bg-[#0F1623] px-3 py-2.5 text-xs text-white focus:border-violet-500 focus:outline-none"
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs sm:text-sm text-slate-900 focus:border-indigo-500 focus:outline-none shadow-2xs"
                   >
                     <option value={15}>15 Minutes</option>
                     <option value={30}>30 Minutes</option>
@@ -782,15 +927,19 @@ export function CalendarView({
                   </select>
                 </div>
                 <div>
-                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Project / Channel</label>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Project / Channel
+                  </label>
                   <select
                     value={selectedChannelId}
                     onChange={(e) => setSelectedChannelId(e.target.value)}
-                    className="w-full rounded-xl border border-white/10 bg-[#0F1623] px-3 py-2.5 text-xs text-white focus:border-violet-500 focus:outline-none"
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs sm:text-sm text-slate-900 focus:border-indigo-500 focus:outline-none shadow-2xs"
                   >
                     <option value="">General (No Channel)</option>
                     {channels.map((ch) => (
-                      <option key={ch.id} value={ch.id}>#{ch.name}</option>
+                      <option key={ch.id} value={ch.id}>
+                        #{ch.name}
+                      </option>
                     ))}
                   </select>
                 </div>
@@ -798,65 +947,86 @@ export function CalendarView({
 
               {/* Invite teammates */}
               <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-bold text-slate-700">
                     Invite Teammates ({selectedUserIds.length} / {members.length - 1})
                   </label>
                   <button
                     type="button"
                     onClick={() => {
-                      const allIds = members.filter((m) => m.user.id !== currentUser?.id).map((m) => m.user.id);
+                      const allIds = members
+                        .filter((m) => m.user.id !== currentUser?.id)
+                        .map((m) => m.user.id);
                       setSelectedUserIds(selectedUserIds.length === allIds.length ? [] : allIds);
                     }}
-                    className="text-[10px] font-bold text-violet-400 hover:text-violet-300"
+                    className="text-xs font-bold text-indigo-600 hover:text-indigo-700"
                   >
                     {selectedUserIds.length === members.length - 1 ? 'Deselect All' : 'Select All'}
                   </button>
                 </div>
 
                 {/* Member search */}
-                <div className="flex items-center gap-2 bg-white/5 rounded-xl border border-white/8 px-3 py-1.5 mb-2">
-                  <Search className="h-3.5 w-3.5 text-slate-600 shrink-0" />
+                <div className="flex items-center gap-2 bg-slate-50 rounded-xl border border-slate-200 px-3 py-1.5 mb-2 shadow-2xs">
+                  <Search className="h-3.5 w-3.5 text-slate-400 shrink-0" />
                   <input
                     type="text"
                     value={memberSearch}
                     onChange={(e) => setMemberSearch(e.target.value)}
-                    placeholder="Search members..."
-                    className="bg-transparent text-xs text-slate-300 placeholder-slate-600 outline-none flex-1"
+                    placeholder="Search teammates..."
+                    className="bg-transparent text-xs text-slate-900 placeholder:text-slate-400 outline-none flex-1"
                   />
                 </div>
 
-                <div className="max-h-40 overflow-y-auto rounded-2xl border border-white/8 bg-white/3 space-y-0.5 p-1.5">
+                <div className="max-h-36 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50/50 space-y-0.5 p-1.5">
                   {members
-                    .filter((m) => m.user.id !== currentUser?.id && m.user.name.toLowerCase().includes(memberSearch.toLowerCase()))
+                    .filter(
+                      (m) =>
+                        m.user.id !== currentUser?.id &&
+                        m.user.name.toLowerCase().includes(memberSearch.toLowerCase()),
+                    )
                     .map((m) => {
                       const isChecked = selectedUserIds.includes(m.user.id);
                       return (
                         <label
                           key={m.id}
-                          className={`flex items-center justify-between p-2 rounded-xl cursor-pointer transition-colors ${
-                            isChecked ? 'bg-violet-600/20 border border-violet-500/30' : 'hover:bg-white/5'
+                          className={`flex items-center justify-between p-2 rounded-lg cursor-pointer transition-colors ${
+                            isChecked
+                              ? 'bg-indigo-50 border border-indigo-200'
+                              : 'hover:bg-white'
                           }`}
                         >
                           <div className="flex items-center gap-2 min-w-0">
                             <img
-                              src={m.user.avatarUrl || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(m.user.name)}`}
+                              src={
+                                m.user.avatarUrl ||
+                                `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(
+                                  m.user.name,
+                                )}`
+                              }
                               alt={m.user.name}
-                              className="h-6 w-6 rounded-md object-cover border border-white/10 shrink-0"
+                              className="h-6 w-6 rounded-full object-cover border border-slate-200 shrink-0"
                             />
                             <div className="min-w-0">
-                              <div className="text-xs font-semibold text-slate-200 truncate">{m.user.name}</div>
-                              <div className="text-[10px] text-slate-500 truncate">{ROLE_CONFIGS[m.role]?.label || m.role}</div>
+                              <div className="text-xs font-semibold text-slate-800 truncate">
+                                {m.user.name}
+                              </div>
+                              <div className="text-[10px] text-slate-400 truncate">
+                                {ROLE_CONFIGS[m.role]?.label || m.role}
+                              </div>
                             </div>
                           </div>
                           <input
                             type="checkbox"
                             checked={isChecked}
                             onChange={(e) => {
-                              if (e.target.checked) setSelectedUserIds((prev) => [...prev, m.user.id]);
-                              else setSelectedUserIds((prev) => prev.filter((id) => id !== m.user.id));
+                              if (e.target.checked)
+                                setSelectedUserIds((prev) => [...prev, m.user.id]);
+                              else
+                                setSelectedUserIds((prev) =>
+                                  prev.filter((id) => id !== m.user.id),
+                                );
                             }}
-                            className="h-4 w-4 rounded border-slate-600 text-violet-600 focus:ring-violet-600 bg-transparent"
+                            className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
                           />
                         </label>
                       );
@@ -864,22 +1034,28 @@ export function CalendarView({
                 </div>
               </div>
 
-              {/* Submit */}
-              <div className="flex justify-end gap-2.5 pt-2 border-t border-white/8">
+              {/* Submit buttons */}
+              <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => setShowModal(false)}
-                  className="rounded-xl border border-white/10 px-4 py-2.5 text-xs font-semibold text-slate-400 hover:text-white hover:bg-white/8 transition-colors"
+                  className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={submitting || !title.trim()}
-                  className="rounded-xl bg-violet-600 hover:bg-violet-500 px-5 py-2.5 text-xs font-bold text-white shadow-lg shadow-violet-600/20 disabled:opacity-50 transition-all flex items-center gap-1.5"
+                  className="rounded-xl bg-indigo-600 hover:bg-indigo-700 active:scale-[0.99] px-5 py-2 text-xs font-bold text-white shadow-md shadow-indigo-600/20 disabled:opacity-50 transition-all flex items-center gap-1.5"
                 >
                   {submitting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                  <span>{submitting ? 'Saving...' : editingMeeting ? 'Update Meeting' : 'Schedule & Notify'}</span>
+                  <span>
+                    {submitting
+                      ? 'Saving...'
+                      : editingMeeting
+                      ? 'Update Meeting'
+                      : 'Schedule & Notify'}
+                  </span>
                 </button>
               </div>
             </form>
