@@ -13,14 +13,15 @@ import {
   AlertCircle,
   Copy,
   Hash,
+  ChevronLeft,
   ChevronRight,
   Loader2,
   Trash2,
   Pencil,
-  Crown,
   Sparkles,
-  CheckCircle2,
-  ExternalLink,
+  Zap,
+  Crown,
+  Search,
 } from 'lucide-react';
 import { User, WorkspaceMember, WorkspaceRole, Meeting } from '@/types/auth';
 import { ROLE_CONFIGS, canInviteMembers } from '@/lib/roles';
@@ -39,6 +40,34 @@ interface CalendarViewProps {
   onClose?: () => void;
 }
 
+const WEEKDAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+function formatTime(date: Date) {
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatDuration(mins: number) {
+  if (mins < 60) return `${mins}m`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
+function getRelativeDay(date: Date): string {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const target = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const diff = Math.round((target.getTime() - today.getTime()) / 86400000);
+  if (diff === 0) return 'Today';
+  if (diff === 1) return 'Tomorrow';
+  if (diff === -1) return 'Yesterday';
+  return date.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
+}
+
 export function CalendarView({
   workspaceId,
   token,
@@ -55,7 +84,11 @@ export function CalendarView({
   const [filterTab, setFilterTab] = useState<'upcoming' | 'all' | 'past'>('upcoming');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Modal State for Schedule/Edit Meeting
+  // Calendar state
+  const [calendarDate, setCalendarDate] = useState(new Date());
+  const [selectedDay, setSelectedDay] = useState<Date | null>(new Date());
+
+  // Modal State
   const [showModal, setShowModal] = useState(false);
   const [editingMeeting, setEditingMeeting] = useState<Meeting | null>(null);
   const [title, setTitle] = useState('');
@@ -68,9 +101,10 @@ export function CalendarView({
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [copiedLinkMeetingId, setCopiedLinkMeetingId] = useState<string | null>(null);
+  const [memberSearch, setMemberSearch] = useState('');
 
-  // Authority check: Super Admin, Admin, Manager, Team Lead can schedule & manage for team
   const canSchedule = canInviteMembers(currentUserRole);
+  const now = new Date();
 
   useEffect(() => {
     loadMeetings();
@@ -83,10 +117,7 @@ export function CalendarView({
       const res = await fetch(`${API_URL}/workspaces/${workspaceId}/meetings`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (res.ok) {
-        const data = await res.json();
-        setMeetings(data);
-      }
+      if (res.ok) setMeetings(await res.json());
     } catch (e) {
       console.error('Failed to load meetings:', e);
     } finally {
@@ -98,15 +129,20 @@ export function CalendarView({
     setEditingMeeting(null);
     setTitle('');
     setDescription('');
-    // Default date to tomorrow
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    setDate(tomorrow.toISOString().split('T')[0]);
+    const d = selectedDay || new Date();
+    if (d < now) {
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      setDate(tomorrow.toISOString().split('T')[0]);
+    } else {
+      setDate(d.toISOString().split('T')[0]);
+    }
     setTime('14:00');
     setDuration(30);
     setSelectedChannelId(channels[0]?.id || '');
     setSelectedUserIds(members.filter((m) => m.user.id !== currentUser?.id).map((m) => m.user.id));
     setFormError(null);
+    setMemberSearch('');
     setShowModal(true);
   }
 
@@ -121,16 +157,15 @@ export function CalendarView({
     setSelectedChannelId(m.channelId || '');
     setSelectedUserIds(m.participants?.map((p) => p.userId) || []);
     setFormError(null);
+    setMemberSearch('');
     setShowModal(true);
   }
 
   async function handleSubmitMeeting(e: React.FormEvent) {
     e.preventDefault();
     if (!title.trim() || !date || !time || !token) return;
-
     setSubmitting(true);
     setFormError(null);
-
     try {
       const scheduledAt = new Date(`${date}T${time}:00`).toISOString();
       const payload: any = {
@@ -141,28 +176,20 @@ export function CalendarView({
         channelId: selectedChannelId || undefined,
         participantIds: selectedUserIds,
       };
-
       let res: Response;
       if (editingMeeting) {
         res = await fetch(`${API_URL}/meetings/${editingMeeting.id}`, {
           method: 'PATCH',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify(payload),
         });
       } else {
         res = await fetch(`${API_URL}/workspaces/${workspaceId}/meetings`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify(payload),
         });
       }
-
       if (res.ok) {
         setShowModal(false);
         loadMeetings();
@@ -170,7 +197,7 @@ export function CalendarView({
         const data = await res.json();
         setFormError(data.message || 'Failed to save meeting');
       }
-    } catch (err) {
+    } catch {
       setFormError('Failed to connect to server');
     } finally {
       setSubmitting(false);
@@ -184,9 +211,7 @@ export function CalendarView({
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (res.ok) {
-        setMeetings((prev) => prev.filter((m) => m.id !== meetingId));
-      }
+      if (res.ok) setMeetings((prev) => prev.filter((m) => m.id !== meetingId));
     } catch (e) {
       console.error('Failed to cancel meeting:', e);
     }
@@ -199,79 +224,111 @@ export function CalendarView({
     setTimeout(() => setCopiedLinkMeetingId(null), 2500);
   }
 
-  // Filtered lists
-  const now = new Date();
-  const filteredMeetings = useMemo(() => {
-    return meetings.filter((m) => {
-      const d = new Date(m.scheduledAt);
-      const isPast = d.getTime() + m.duration * 60000 < now.getTime();
-      const matchesSearch =
-        m.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (m.channel?.name && m.channel.name.toLowerCase().includes(searchQuery.toLowerCase())) ||
-        (m.host?.name && m.host.name.toLowerCase().includes(searchQuery.toLowerCase()));
+  // Calendar grid computation
+  const calendarDays = useMemo(() => {
+    const year = calendarDate.getFullYear();
+    const month = calendarDate.getMonth();
+    const firstDay = new Date(year, month, 1).getDay();
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const days: (Date | null)[] = [];
+    for (let i = 0; i < firstDay; i++) days.push(null);
+    for (let d = 1; d <= daysInMonth; d++) days.push(new Date(year, month, d));
+    return days;
+  }, [calendarDate]);
 
-      if (!matchesSearch) return false;
-
-      if (filterTab === 'upcoming') {
-        return !isPast || m.status === 'LIVE';
-      }
-      if (filterTab === 'past') {
-        return isPast && m.status !== 'LIVE';
-      }
-      return true;
+  // Meetings indexed by date string "YYYY-MM-DD"
+  const meetingsByDay = useMemo(() => {
+    const map = new Map<string, Meeting[]>();
+    meetings.forEach((m) => {
+      const key = new Date(m.scheduledAt).toLocaleDateString('en-CA'); // YYYY-MM-DD
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(m);
     });
-  }, [meetings, filterTab, searchQuery]);
+    return map;
+  }, [meetings]);
+
+  // Filtered list for right panel
+  const filteredMeetings = useMemo(() => {
+    return meetings
+      .filter((m) => {
+        const d = new Date(m.scheduledAt);
+        const isPast = d.getTime() + m.duration * 60000 < now.getTime();
+        const matchesSearch =
+          m.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+          (m.channel?.name && m.channel.name.toLowerCase().includes(searchQuery.toLowerCase())) ||
+          (m.host?.name && m.host.name.toLowerCase().includes(searchQuery.toLowerCase()));
+        if (!matchesSearch) return false;
+
+        // If a day is selected on calendar, filter to that day only
+        if (selectedDay) {
+          const selKey = selectedDay.toLocaleDateString('en-CA');
+          const meetKey = d.toLocaleDateString('en-CA');
+          if (selKey !== meetKey) return false;
+        } else {
+          if (filterTab === 'upcoming') return !isPast || m.status === 'LIVE';
+          if (filterTab === 'past') return isPast && m.status !== 'LIVE';
+        }
+        return true;
+      })
+      .sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
+  }, [meetings, filterTab, searchQuery, selectedDay]);
+
+  function prevMonth() {
+    setCalendarDate((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1));
+  }
+  function nextMonth() {
+    setCalendarDate((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1));
+  }
+  function goToToday() {
+    setCalendarDate(new Date());
+    setSelectedDay(new Date());
+  }
+
+  const todayKey = now.toLocaleDateString('en-CA');
+  const selectedKey = selectedDay?.toLocaleDateString('en-CA');
 
   return (
-    <div className="flex-1 flex flex-col h-full bg-slate-50/50 overflow-hidden text-slate-800">
-      {/* Top Header */}
-      <div className="px-6 py-5 bg-white border-b border-slate-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shrink-0 shadow-xs">
-        <div>
-          <div className="flex items-center gap-2.5">
-            <div className="h-9 w-9 rounded-2xl bg-gradient-to-tr from-indigo-600 to-purple-600 text-white flex items-center justify-center shadow-md shadow-indigo-600/20">
-              <CalendarDays className="h-5 w-5" />
-            </div>
-            <div>
-              <h1 className="text-xl font-black text-slate-900 tracking-tight flex items-center gap-2">
-                <span>Calendar & Team Meetings</span>
-                <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 border border-indigo-200 text-indigo-700">
-                  {currentUserRole === 'OWNER'
-                    ? 'Super Admin Hub'
-                    : currentUserRole === 'ADMIN'
-                    ? 'Admin View'
-                    : currentUserRole === 'MANAGER'
-                    ? 'Manager View'
-                    : currentUserRole === 'TEAM_LEAD'
-                    ? 'Team Lead View'
-                    : 'Team Schedule'}
-                </span>
-              </h1>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Schedule video calls, view project meetings, and join live team conferences
-              </p>
-            </div>
+    <div className="flex-1 flex flex-col h-full overflow-hidden" style={{ background: 'linear-gradient(135deg, #0A0D14 0%, #0F1623 100%)', fontFamily: "'Inter', system-ui, sans-serif" }}>
+      {/* ── TOP HEADER ──────────────────────────────────────────────── */}
+      <div className="px-5 py-4 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#111827]/80 backdrop-blur-md">
+        <div className="flex items-center gap-3">
+          <div className="h-9 w-9 rounded-2xl bg-gradient-to-tr from-violet-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-violet-600/20">
+            <CalendarDays className="h-5 w-5 text-white" />
+          </div>
+          <div>
+            <h1 className="text-base font-bold text-white flex items-center gap-2">
+              Calendar & Meetings
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                currentUserRole === 'OWNER' ? 'bg-amber-500/15 border-amber-500/30 text-amber-300' :
+                currentUserRole === 'ADMIN' ? 'bg-violet-500/15 border-violet-500/30 text-violet-300' :
+                'bg-slate-700/50 border-slate-600/40 text-slate-400'
+              }`}>
+                {currentUserRole === 'OWNER' ? '👑 Super Admin' : currentUserRole === 'ADMIN' ? '🛡 Admin' : currentUserRole === 'MANAGER' ? '⚡ Manager' : currentUserRole === 'TEAM_LEAD' ? '🎯 Team Lead' : 'Team'}
+              </span>
+            </h1>
+            <p className="text-[11px] text-slate-500 mt-0.5">Video calls, project syncs &amp; team conferences</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2.5 flex-wrap">
+        <div className="flex items-center gap-2">
+          {/* Instant meeting */}
           <button
             type="button"
             onClick={() => onStartInstantMeeting('Instant Team Meeting')}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white border border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-bold transition-all shadow-2xs"
-            title="Start an instant group meeting right now"
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-300 text-xs font-bold transition-all"
           >
-            <Video className="h-4 w-4 text-emerald-600" />
-            <span>Start Instant Call</span>
+            <Zap className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Start Now</span>
           </button>
 
           {canSchedule && (
             <button
               type="button"
               onClick={openCreateModal}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white text-xs font-bold shadow-md shadow-indigo-600/20 transition-all hover:scale-102 active:scale-98"
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold shadow-lg shadow-violet-600/20 transition-all"
             >
               <Plus className="h-4 w-4" />
-              <span>Schedule Meeting</span>
+              <span>Schedule</span>
             </button>
           )}
 
@@ -279,8 +336,7 @@ export function CalendarView({
             <button
               type="button"
               onClick={onClose}
-              className="p-2 rounded-xl text-slate-400 hover:text-slate-800 hover:bg-slate-100 transition-colors"
-              title="Close Calendar"
+              className="p-2 rounded-xl text-slate-500 hover:text-white hover:bg-white/8 transition-colors"
             >
               <X className="h-5 w-5" />
             </button>
@@ -288,342 +344,433 @@ export function CalendarView({
         </div>
       </div>
 
-      {/* Control / Filter Bar */}
-      <div className="px-6 py-3 bg-white/70 border-b border-slate-200/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
-        <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => setFilterTab('upcoming')}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-              filterTab === 'upcoming'
-                ? 'bg-indigo-600 text-white shadow-xs'
-                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-            }`}
-          >
-            Upcoming & Live ({meetings.filter((m) => new Date(m.scheduledAt).getTime() + m.duration * 60000 >= now.getTime() || m.status === 'LIVE').length})
-          </button>
-          <button
-            type="button"
-            onClick={() => setFilterTab('all')}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-              filterTab === 'all'
-                ? 'bg-indigo-600 text-white shadow-xs'
-                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-            }`}
-          >
-            All Meetings ({meetings.length})
-          </button>
-          <button
-            type="button"
-            onClick={() => setFilterTab('past')}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-              filterTab === 'past'
-                ? 'bg-indigo-600 text-white shadow-xs'
-                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-            }`}
-          >
-            Past Completed
-          </button>
-        </div>
+      {/* ── MAIN LAYOUT ─────────────────────────────────────────────── */}
+      <div className="flex-1 flex min-h-0 overflow-hidden">
 
-        <div className="relative">
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search meetings by title, project, host..."
-            className="w-full sm:w-64 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-indigo-500 shadow-2xs"
-          />
-        </div>
-      </div>
-
-      {/* Meetings Content List */}
-      <div className="flex-1 overflow-y-auto p-6">
-        {loading ? (
-          <div className="py-20 flex flex-col items-center justify-center text-slate-400">
-            <Loader2 className="h-8 w-8 animate-spin text-indigo-600 mb-2" />
-            <span className="text-xs font-medium">Loading schedule...</span>
-          </div>
-        ) : filteredMeetings.length === 0 ? (
-          <div className="py-16 flex flex-col items-center justify-center text-center bg-white rounded-3xl border border-slate-200/80 p-8 shadow-xs">
-            <div className="h-16 w-16 rounded-3xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600 mb-3 shadow-sm">
-              <CalendarIcon className="h-8 w-8" />
+        {/* ── LEFT: CALENDAR GRID ─────────────────────────────────── */}
+        <div className="w-72 shrink-0 border-r border-white/5 flex flex-col bg-[#0D1117] hidden lg:flex">
+          {/* Month nav */}
+          <div className="px-4 py-3 flex items-center justify-between border-b border-white/5">
+            <button onClick={prevMonth} className="p-1.5 rounded-lg text-slate-500 hover:text-white hover:bg-white/8 transition-colors">
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <div className="text-center">
+              <div className="text-sm font-bold text-white">
+                {MONTH_NAMES[calendarDate.getMonth()]}
+              </div>
+              <div className="text-[11px] text-slate-500">{calendarDate.getFullYear()}</div>
             </div>
-            <h3 className="text-base font-bold text-slate-900">No Scheduled Meetings Found</h3>
-            <p className="text-xs text-slate-500 max-w-sm mt-1 mb-5">
-              {searchQuery
-                ? 'No meetings matched your search criteria.'
-                : 'Plan project check-ins, sprint reviews, or team syncs. Teammates will receive calendar invites & notifications.'}
-            </p>
-            {canSchedule && (
-              <button
-                type="button"
-                onClick={openCreateModal}
-                className="flex items-center gap-2 px-4 py-2 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold shadow-md shadow-indigo-600/20 transition-all"
-              >
-                <Plus className="h-4 w-4" />
-                <span>Schedule First Meeting</span>
-              </button>
-            )}
+            <button onClick={nextMonth} className="p-1.5 rounded-lg text-slate-500 hover:text-white hover:bg-white/8 transition-colors">
+              <ChevronRight className="h-4 w-4" />
+            </button>
           </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {filteredMeetings.map((m) => {
-              const meetingDate = new Date(m.scheduledAt);
-              const isLive = m.status === 'LIVE';
-              const isHost = m.hostId === currentUser?.id;
-              const canEditThis = isHost || canSchedule;
 
+          {/* Weekday headers */}
+          <div className="grid grid-cols-7 px-3 pt-3 pb-1">
+            {WEEKDAYS.map((d) => (
+              <div key={d} className="text-center text-[10px] font-bold text-slate-600 py-1">{d}</div>
+            ))}
+          </div>
+
+          {/* Day grid */}
+          <div className="grid grid-cols-7 px-3 pb-3 gap-y-1">
+            {calendarDays.map((day, idx) => {
+              if (!day) return <div key={idx} />;
+              const key = day.toLocaleDateString('en-CA');
+              const dayMeetings = meetingsByDay.get(key) || [];
+              const isToday = key === todayKey;
+              const isSelected = key === selectedKey;
+              const isLive = dayMeetings.some((m) => m.status === 'LIVE');
               return (
-                <div
-                  key={m.id}
-                  className={`rounded-3xl p-5 border transition-all flex flex-col justify-between shadow-xs ${
-                    isLive
-                      ? 'bg-gradient-to-br from-emerald-50/80 via-white to-white border-emerald-300 ring-2 ring-emerald-400/20'
-                      : 'bg-white hover:border-indigo-200 border-slate-200/80 hover:shadow-md'
+                <button
+                  key={idx}
+                  type="button"
+                  onClick={() => {
+                    if (isSelected) {
+                      setSelectedDay(null);
+                    } else {
+                      setSelectedDay(day);
+                    }
+                  }}
+                  className={`relative h-8 w-8 mx-auto rounded-xl text-xs font-semibold transition-all flex flex-col items-center justify-center ${
+                    isSelected
+                      ? 'bg-violet-600 text-white shadow-lg shadow-violet-600/30'
+                      : isToday
+                      ? 'bg-white/10 text-white font-bold border border-white/20'
+                      : 'text-slate-400 hover:text-white hover:bg-white/8'
                   }`}
                 >
-                  <div>
-                    {/* Header: Project tag + Status */}
-                    <div className="flex items-center justify-between gap-2 mb-3">
-                      <div className="flex items-center gap-1.5 text-xs font-bold text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-xl border border-indigo-100/80 truncate">
-                        <Hash className="h-3 w-3 shrink-0" />
-                        <span className="truncate">{m.channel?.name || 'General Workspace'}</span>
-                      </div>
-
-                      {isLive ? (
-                        <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-500 text-white shadow-xs flex items-center gap-1.5 animate-pulse">
-                          <span className="h-1.5 w-1.5 rounded-full bg-white" />
-                          <span>LIVE NOW</span>
-                        </span>
-                      ) : (
-                        <span className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-600 border border-slate-200">
-                          Scheduled
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Title & Description */}
-                    <h3 className="font-bold text-base text-slate-900 leading-snug line-clamp-1" title={m.title}>
-                      {m.title}
-                    </h3>
-                    {m.description && (
-                      <p className="text-xs text-slate-500 mt-1 line-clamp-2 leading-relaxed">
-                        {m.description}
-                      </p>
-                    )}
-
-                    {/* Date, Time & Duration */}
-                    <div className="mt-4 p-3 rounded-2xl bg-slate-50 border border-slate-200/60 space-y-1.5">
-                      <div className="flex items-center gap-2 text-xs font-bold text-slate-800">
-                        <CalendarIcon className="h-3.5 w-3.5 text-indigo-600 shrink-0" />
-                        <span>
-                          {meetingDate.toLocaleDateString([], {
-                            weekday: 'short',
-                            month: 'short',
-                            day: 'numeric',
-                            year: 'numeric',
-                          })}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2 text-xs text-slate-600">
-                        <Clock className="h-3.5 w-3.5 text-slate-400 shrink-0" />
-                        <span>
-                          {meetingDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} •{' '}
-                          {m.duration} mins
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Host & Participants Details */}
-                    <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <img
-                          src={m.host?.avatarUrl || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
-                          alt={m.host?.name || 'Host'}
-                          className="h-6 w-6 rounded-lg border border-slate-200 object-cover shrink-0"
-                        />
-                        <div className="min-w-0">
-                          <span className="text-[11px] text-slate-400 block leading-none">Scheduled by</span>
-                          <span className="text-xs font-bold text-slate-800 truncate block mt-0.5">
-                            {m.host?.name || 'Teammate'}
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Participant Avatars */}
-                      {m.participants && m.participants.length > 0 && (
-                        <div className="flex -space-x-1.5 overflow-hidden shrink-0">
-                          {m.participants.slice(0, 4).map((p, idx) => (
-                            <img
-                              key={idx}
-                              src={p.user?.avatarUrl || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
-                              alt={p.user?.name || 'User'}
-                              title={p.user?.name}
-                              className="h-6 w-6 rounded-lg border-2 border-white object-cover"
-                            />
-                          ))}
-                          {m.participants.length > 4 && (
-                            <span className="h-6 w-6 rounded-lg bg-slate-200 text-slate-700 text-[10px] font-bold flex items-center justify-center border-2 border-white">
-                              +{m.participants.length - 4}
-                            </span>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Actions Bar */}
-                  <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
-                    <button
-                      type="button"
-                      onClick={() => onJoinMeeting(m)}
-                      className={`flex-1 py-2 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-xs ${
-                        isLive
-                          ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/20 animate-pulse'
-                          : 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white'
-                      }`}
-                    >
-                      <Video className="h-3.5 w-3.5" />
-                      <span>{isLive ? 'Join Live Meeting' : 'Start / Join Call'}</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => copyMeetingLink(m)}
-                      className="p-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-600 transition-colors shrink-0"
-                      title="Copy meeting link"
-                    >
-                      {copiedLinkMeetingId === m.id ? (
-                        <Check className="h-4 w-4 text-emerald-600" />
-                      ) : (
-                        <Copy className="h-4 w-4" />
-                      )}
-                    </button>
-
-                    {canEditThis && (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => openEditModal(m)}
-                          className="p-2 rounded-xl border border-slate-200 hover:bg-indigo-50 text-slate-600 hover:text-indigo-600 transition-colors shrink-0"
-                          title="Edit meeting details"
-                        >
-                          <Pencil className="h-4 w-4" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteMeeting(m.id)}
-                          className="p-2 rounded-xl border border-slate-200 hover:bg-rose-50 text-slate-600 hover:text-rose-600 transition-colors shrink-0"
-                          title="Cancel meeting"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
+                  {day.getDate()}
+                  {dayMeetings.length > 0 && (
+                    <span className={`absolute bottom-0.5 h-1 w-1 rounded-full ${isLive ? 'bg-emerald-400' : 'bg-violet-400'} ${isSelected ? 'bg-white' : ''}`} />
+                  )}
+                </button>
               );
             })}
           </div>
-        )}
+
+          {/* Today button */}
+          <div className="px-3 pb-3">
+            <button
+              type="button"
+              onClick={goToToday}
+              className="w-full py-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white text-xs font-semibold transition-colors border border-white/5"
+            >
+              Go to Today
+            </button>
+          </div>
+
+          {/* Mini stats */}
+          <div className="mt-auto border-t border-white/5 px-4 py-4 space-y-2">
+            {[
+              { label: 'Upcoming', count: meetings.filter((m) => new Date(m.scheduledAt).getTime() + m.duration * 60000 >= now.getTime() && m.status !== 'LIVE').length, color: 'text-violet-400' },
+              { label: 'Live Now', count: meetings.filter((m) => m.status === 'LIVE').length, color: 'text-emerald-400' },
+              { label: 'Total', count: meetings.length, color: 'text-slate-400' },
+            ].map(({ label, count, color }) => (
+              <div key={label} className="flex items-center justify-between text-[11px]">
+                <span className="text-slate-500">{label}</span>
+                <span className={`font-bold ${color}`}>{count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* ── RIGHT: MEETINGS LIST ─────────────────────────────────── */}
+        <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+          {/* Filter / Search bar */}
+          <div className="px-5 py-3 border-b border-white/5 flex items-center gap-3 bg-[#0F1623]/80 backdrop-blur-sm shrink-0">
+            {/* Day label */}
+            {selectedDay ? (
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="text-sm font-bold text-white">{getRelativeDay(selectedDay)}</span>
+                <button
+                  type="button"
+                  onClick={() => setSelectedDay(null)}
+                  className="text-slate-500 hover:text-white p-0.5 rounded-md"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5 flex-wrap shrink-0">
+                {(['upcoming', 'all', 'past'] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    onClick={() => setFilterTab(tab)}
+                    className={`px-3 py-1.5 rounded-xl text-[11px] font-bold capitalize transition-all ${
+                      filterTab === tab
+                        ? 'bg-violet-600 text-white'
+                        : 'text-slate-500 hover:text-white hover:bg-white/8'
+                    }`}
+                  >
+                    {tab}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className="ml-auto flex items-center gap-2 bg-white/5 rounded-xl border border-white/8 px-3 py-1.5 min-w-0 max-w-[220px]">
+              <Search className="h-3.5 w-3.5 text-slate-500 shrink-0" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search..."
+                className="bg-transparent text-xs text-slate-200 placeholder-slate-600 outline-none w-full"
+              />
+            </div>
+          </div>
+
+          {/* Meetings list */}
+          <div className="flex-1 overflow-y-auto p-5 space-y-3">
+            {loading ? (
+              <div className="py-24 flex flex-col items-center justify-center text-slate-600">
+                <Loader2 className="h-8 w-8 animate-spin text-violet-500 mb-3" />
+                <span className="text-xs">Loading schedule...</span>
+              </div>
+            ) : filteredMeetings.length === 0 ? (
+              <div className="py-20 flex flex-col items-center justify-center text-center">
+                <div className="h-16 w-16 rounded-3xl bg-violet-600/10 border border-violet-500/20 flex items-center justify-center mb-4">
+                  <CalendarIcon className="h-8 w-8 text-violet-500/60" />
+                </div>
+                <h3 className="text-sm font-bold text-slate-400">
+                  {selectedDay ? `No meetings on ${getRelativeDay(selectedDay)}` : 'No meetings found'}
+                </h3>
+                <p className="text-[11px] text-slate-600 mt-1 max-w-xs">
+                  {searchQuery ? 'Try a different search term' : 'Plan project check-ins, sprint reviews, or team syncs'}
+                </p>
+                {canSchedule && (
+                  <button
+                    type="button"
+                    onClick={openCreateModal}
+                    className="mt-5 flex items-center gap-2 px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold shadow-lg shadow-violet-600/20 transition-all"
+                  >
+                    <Plus className="h-4 w-4" />
+                    Schedule Meeting
+                  </button>
+                )}
+              </div>
+            ) : (
+              filteredMeetings.map((m) => {
+                const meetingDate = new Date(m.scheduledAt);
+                const isLive = m.status === 'LIVE';
+                const isPast = meetingDate.getTime() + m.duration * 60000 < now.getTime() && !isLive;
+                const isHost = m.hostId === currentUser?.id;
+                const canEditThis = isHost || canSchedule;
+                const minsUntil = Math.round((meetingDate.getTime() - now.getTime()) / 60000);
+
+                return (
+                  <div
+                    key={m.id}
+                    className={`rounded-2xl border transition-all group ${
+                      isLive
+                        ? 'bg-gradient-to-br from-emerald-500/10 to-[#0F1623] border-emerald-500/30 shadow-lg shadow-emerald-500/5'
+                        : isPast
+                        ? 'bg-[#0D1117]/80 border-white/5 opacity-60'
+                        : 'bg-[#111827] border-white/8 hover:border-violet-500/30'
+                    }`}
+                  >
+                    <div className="p-4">
+                      {/* Row 1: Channel tag + status */}
+                      <div className="flex items-center justify-between gap-2 mb-2.5">
+                        <div className="flex items-center gap-1.5 text-[11px] font-bold text-violet-400 bg-violet-500/10 px-2 py-0.5 rounded-lg border border-violet-500/20 truncate max-w-[160px]">
+                          <Hash className="h-3 w-3 shrink-0" />
+                          <span className="truncate">{m.channel?.name || 'General'}</span>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {isLive && (
+                            <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-500 text-white animate-pulse">
+                              <span className="h-1.5 w-1.5 rounded-full bg-white" />
+                              LIVE
+                            </span>
+                          )}
+                          {!isLive && !isPast && minsUntil <= 15 && minsUntil > 0 && (
+                            <span className="flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-bold bg-amber-500/20 border border-amber-500/40 text-amber-300">
+                              Starts in {minsUntil}m
+                            </span>
+                          )}
+                          {isPast && (
+                            <span className="px-2 py-1 rounded-full text-[10px] font-semibold bg-white/5 text-slate-600 border border-white/5">
+                              Ended
+                            </span>
+                          )}
+                          {!isLive && !isPast && minsUntil > 15 && (
+                            <span className="px-2 py-1 rounded-full text-[10px] font-semibold bg-white/5 text-slate-500 border border-white/5">
+                              Scheduled
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Row 2: Title */}
+                      <h3 className={`font-bold text-sm leading-snug line-clamp-1 ${isPast ? 'text-slate-500' : 'text-white'}`}>
+                        {m.title}
+                      </h3>
+                      {m.description && (
+                        <p className="text-[11px] text-slate-500 mt-0.5 line-clamp-1">{m.description}</p>
+                      )}
+
+                      {/* Row 3: Date/time + duration */}
+                      <div className="mt-3 flex items-center gap-3 text-[11px] text-slate-500">
+                        <span className="flex items-center gap-1">
+                          <CalendarIcon className="h-3 w-3 text-slate-600 shrink-0" />
+                          {getRelativeDay(meetingDate)}
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <Clock className="h-3 w-3 text-slate-600 shrink-0" />
+                          {formatTime(meetingDate)} · {formatDuration(m.duration)}
+                        </span>
+                      </div>
+
+                      {/* Row 4: Host + participants + actions */}
+                      <div className="mt-3 flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <img
+                            src={m.host?.avatarUrl || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(m.host?.name || 'H')}`}
+                            alt={m.host?.name || 'Host'}
+                            className="h-6 w-6 rounded-lg object-cover border border-white/10"
+                          />
+                          <div>
+                            <div className="text-[10px] text-slate-600 leading-none">Scheduled by</div>
+                            <div className="text-[11px] font-bold text-slate-300 leading-none mt-0.5">{m.host?.name || 'Teammate'}</div>
+                          </div>
+
+                          {/* Participant avatars */}
+                          {m.participants && m.participants.length > 0 && (
+                            <div className="flex -space-x-1.5 ml-2">
+                              {m.participants.slice(0, 4).map((p, idx) => (
+                                <img
+                                  key={idx}
+                                  src={p.user?.avatarUrl || `https://api.dicebear.com/7.x/initials/svg?seed=User`}
+                                  alt={p.user?.name || 'User'}
+                                  title={p.user?.name}
+                                  className="h-5 w-5 rounded-md border border-[#111827] object-cover"
+                                />
+                              ))}
+                              {m.participants.length > 4 && (
+                                <span className="h-5 w-5 rounded-md bg-white/10 text-slate-400 text-[9px] font-bold flex items-center justify-center border border-[#111827]">
+                                  +{m.participants.length - 4}
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Action buttons */}
+                        <div className="flex items-center gap-1">
+                          {!isPast && (
+                            <button
+                              type="button"
+                              onClick={() => onJoinMeeting(m)}
+                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all ${
+                                isLive
+                                  ? 'bg-emerald-500 hover:bg-emerald-400 text-white shadow-md shadow-emerald-500/20'
+                                  : 'bg-violet-600 hover:bg-violet-500 text-white shadow-md shadow-violet-600/20'
+                              }`}
+                            >
+                              <Video className="h-3.5 w-3.5" />
+                              <span>{isLive ? 'Join' : 'Start'}</span>
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => copyMeetingLink(m)}
+                            className="p-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-500 hover:text-white transition-colors"
+                            title="Copy meeting link"
+                          >
+                            {copiedLinkMeetingId === m.id
+                              ? <Check className="h-3.5 w-3.5 text-emerald-400" />
+                              : <Copy className="h-3.5 w-3.5" />}
+                          </button>
+
+                          {canEditThis && !isPast && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => openEditModal(m)}
+                                className="p-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-500 hover:text-violet-400 transition-colors opacity-0 group-hover:opacity-100"
+                                title="Edit meeting"
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteMeeting(m.id)}
+                                className="p-1.5 rounded-xl bg-white/5 hover:bg-rose-500/20 text-slate-500 hover:text-rose-400 transition-colors opacity-0 group-hover:opacity-100"
+                                title="Cancel meeting"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
       </div>
 
-      {/* Schedule / Edit Meeting Modal */}
+      {/* ── SCHEDULE / EDIT MODAL ────────────────────────────────────── */}
       {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4 animate-in fade-in duration-150">
-          <div className="w-full max-w-lg rounded-3xl bg-white p-7 shadow-2xl text-slate-900 border border-slate-200 animate-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between pb-3.5 border-b border-slate-100">
-              <div className="flex items-center gap-2.5">
-                <div className="h-9 w-9 rounded-2xl bg-indigo-50 border border-indigo-200 flex items-center justify-center text-indigo-600 shadow-2xs">
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-in fade-in duration-150">
+          <div
+            className="w-full max-w-lg rounded-3xl shadow-2xl text-white border border-white/10 animate-in zoom-in-95 duration-200 max-h-[90vh] overflow-y-auto"
+            style={{ background: 'linear-gradient(145deg, #131929 0%, #0F1623 100%)' }}
+          >
+            {/* Modal header */}
+            <div className="px-6 pt-6 pb-4 border-b border-white/8 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="h-9 w-9 rounded-2xl bg-violet-600/20 border border-violet-500/30 flex items-center justify-center text-violet-400">
                   <CalendarDays className="h-5 w-5" />
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-slate-900">
-                    {editingMeeting ? 'Edit Team Meeting' : 'Schedule Team Meeting'}
+                  <h3 className="text-sm font-bold text-white">
+                    {editingMeeting ? 'Edit Meeting' : 'Schedule Team Meeting'}
                   </h3>
-                  <p className="text-xs text-slate-500">Plan a video meeting with your team</p>
+                  <p className="text-[11px] text-slate-500 mt-0.5">All participants will be notified</p>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setShowModal(false)}
-                className="p-1.5 text-slate-400 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition-colors"
+                className="p-1.5 text-slate-500 hover:text-white hover:bg-white/8 rounded-xl transition-colors"
               >
                 <X className="h-5 w-5" />
               </button>
             </div>
 
             {formError && (
-              <div className="mt-3.5 rounded-xl bg-rose-50 border border-rose-200 p-3 text-xs text-rose-700">
+              <div className="mx-6 mt-4 rounded-xl bg-rose-500/10 border border-rose-500/30 p-3 text-xs text-rose-400 flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0" />
                 {formError}
               </div>
             )}
 
-            <form onSubmit={handleSubmitMeeting} className="mt-5 space-y-4 text-xs">
+            <form onSubmit={handleSubmitMeeting} className="px-6 py-5 space-y-4">
+              {/* Title */}
               <div>
-                <label className="block font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                  Meeting Title *
-                </label>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Meeting Title *</label>
                 <input
                   type="text"
                   required
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
-                  placeholder="e.g. Sprint Planning & Architecture Review"
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-indigo-600 focus:outline-none focus:ring-1 focus:ring-indigo-600"
+                  placeholder="e.g. Sprint Planning · Architecture Review"
+                  className="w-full rounded-xl border border-white/10 bg-white/5 px-3.5 py-2.5 text-sm text-white placeholder-slate-600 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500/30 transition-colors"
                 />
               </div>
 
+              {/* Description */}
               <div>
-                <label className="block font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                  Description / Agenda (Optional)
-                </label>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Agenda / Notes (Optional)</label>
                 <textarea
                   rows={2}
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  placeholder="What will this meeting cover? Add notes or agenda items..."
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:border-indigo-600 focus:outline-none focus:ring-1 focus:ring-indigo-600"
+                  placeholder="What will this meeting cover? Add agenda items..."
+                  className="w-full rounded-xl border border-white/10 bg-white/5 px-3.5 py-2 text-xs text-white placeholder-slate-600 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500/30 transition-colors resize-none"
                 />
               </div>
 
+              {/* Date / Time */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                    Date *
-                  </label>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Date *</label>
                   <input
                     type="date"
                     required
                     value={date}
                     onChange={(e) => setDate(e.target.value)}
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 focus:border-indigo-600 focus:outline-none"
+                    className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-xs text-white focus:border-violet-500 focus:outline-none"
                   />
                 </div>
                 <div>
-                  <label className="block font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                    Time *
-                  </label>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Time *</label>
                   <input
                     type="time"
                     required
                     value={time}
                     onChange={(e) => setTime(e.target.value)}
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 focus:border-indigo-600 focus:outline-none"
+                    className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-xs text-white focus:border-violet-500 focus:outline-none"
                   />
                 </div>
               </div>
 
+              {/* Duration / Channel */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                    Duration
-                  </label>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Duration</label>
                   <select
                     value={duration}
                     onChange={(e) => setDuration(Number(e.target.value))}
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 focus:border-indigo-600 focus:outline-none"
+                    className="w-full rounded-xl border border-white/10 bg-[#0F1623] px-3 py-2.5 text-xs text-white focus:border-violet-500 focus:outline-none"
                   >
                     <option value={15}>15 Minutes</option>
                     <option value={30}>30 Minutes</option>
@@ -631,90 +778,85 @@ export function CalendarView({
                     <option value={60}>1 Hour</option>
                     <option value={90}>1.5 Hours</option>
                     <option value={120}>2 Hours</option>
+                    <option value={180}>3 Hours</option>
                   </select>
                 </div>
-
                 <div>
-                  <label className="block font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                    Project / Channel
-                  </label>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Project / Channel</label>
                   <select
                     value={selectedChannelId}
                     onChange={(e) => setSelectedChannelId(e.target.value)}
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 focus:border-indigo-600 focus:outline-none"
+                    className="w-full rounded-xl border border-white/10 bg-[#0F1623] px-3 py-2.5 text-xs text-white focus:border-violet-500 focus:outline-none"
                   >
-                    <option value="">No Channel (General Meeting)</option>
+                    <option value="">General (No Channel)</option>
                     {channels.map((ch) => (
-                      <option key={ch.id} value={ch.id}>
-                        #{ch.name}
-                      </option>
+                      <option key={ch.id} value={ch.id}>#{ch.name}</option>
                     ))}
                   </select>
                 </div>
               </div>
 
-              {/* Invite Teammates */}
+              {/* Invite teammates */}
               <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="block font-bold text-slate-700 uppercase tracking-wider">
-                    Invite Teammates ({selectedUserIds.length} selected)
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                    Invite Teammates ({selectedUserIds.length} / {members.length - 1})
                   </label>
                   <button
                     type="button"
                     onClick={() => {
-                      if (selectedUserIds.length === members.length - 1) {
-                        setSelectedUserIds([]);
-                      } else {
-                        setSelectedUserIds(
-                          members.filter((m) => m.user.id !== currentUser?.id).map((m) => m.user.id)
-                        );
-                      }
+                      const allIds = members.filter((m) => m.user.id !== currentUser?.id).map((m) => m.user.id);
+                      setSelectedUserIds(selectedUserIds.length === allIds.length ? [] : allIds);
                     }}
-                    className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800"
+                    className="text-[10px] font-bold text-violet-400 hover:text-violet-300"
                   >
                     {selectedUserIds.length === members.length - 1 ? 'Deselect All' : 'Select All'}
                   </button>
                 </div>
 
-                <div className="max-h-36 overflow-y-auto rounded-2xl border border-slate-200 p-2 space-y-1 bg-slate-50/50">
+                {/* Member search */}
+                <div className="flex items-center gap-2 bg-white/5 rounded-xl border border-white/8 px-3 py-1.5 mb-2">
+                  <Search className="h-3.5 w-3.5 text-slate-600 shrink-0" />
+                  <input
+                    type="text"
+                    value={memberSearch}
+                    onChange={(e) => setMemberSearch(e.target.value)}
+                    placeholder="Search members..."
+                    className="bg-transparent text-xs text-slate-300 placeholder-slate-600 outline-none flex-1"
+                  />
+                </div>
+
+                <div className="max-h-40 overflow-y-auto rounded-2xl border border-white/8 bg-white/3 space-y-0.5 p-1.5">
                   {members
-                    .filter((m) => m.user.id !== currentUser?.id)
+                    .filter((m) => m.user.id !== currentUser?.id && m.user.name.toLowerCase().includes(memberSearch.toLowerCase()))
                     .map((m) => {
                       const isChecked = selectedUserIds.includes(m.user.id);
                       return (
                         <label
                           key={m.id}
                           className={`flex items-center justify-between p-2 rounded-xl cursor-pointer transition-colors ${
-                            isChecked ? 'bg-indigo-50 border border-indigo-200 shadow-2xs' : 'hover:bg-white'
+                            isChecked ? 'bg-violet-600/20 border border-violet-500/30' : 'hover:bg-white/5'
                           }`}
                         >
-                          <div className="flex items-center gap-2.5 min-w-0">
+                          <div className="flex items-center gap-2 min-w-0">
                             <img
-                              src={m.user.avatarUrl || 'https://api.dicebear.com/7.x/initials/svg?seed=User'}
+                              src={m.user.avatarUrl || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(m.user.name)}`}
                               alt={m.user.name}
-                              className="h-6 w-6 rounded-md object-cover border border-slate-200 shrink-0"
+                              className="h-6 w-6 rounded-md object-cover border border-white/10 shrink-0"
                             />
                             <div className="min-w-0">
-                              <span className="text-xs font-bold text-slate-800 truncate block">
-                                {m.user.name}
-                              </span>
-                              <span className="text-[10px] text-slate-400 truncate block">
-                                {ROLE_CONFIGS[m.role]?.label || m.role} • {m.user.email}
-                              </span>
+                              <div className="text-xs font-semibold text-slate-200 truncate">{m.user.name}</div>
+                              <div className="text-[10px] text-slate-500 truncate">{ROLE_CONFIGS[m.role]?.label || m.role}</div>
                             </div>
                           </div>
-
                           <input
                             type="checkbox"
                             checked={isChecked}
                             onChange={(e) => {
-                              if (e.target.checked) {
-                                setSelectedUserIds((prev) => [...prev, m.user.id]);
-                              } else {
-                                setSelectedUserIds((prev) => prev.filter((id) => id !== m.user.id));
-                              }
+                              if (e.target.checked) setSelectedUserIds((prev) => [...prev, m.user.id]);
+                              else setSelectedUserIds((prev) => prev.filter((id) => id !== m.user.id));
                             }}
-                            className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-600"
+                            className="h-4 w-4 rounded border-slate-600 text-violet-600 focus:ring-violet-600 bg-transparent"
                           />
                         </label>
                       );
@@ -722,18 +864,19 @@ export function CalendarView({
                 </div>
               </div>
 
-              <div className="flex justify-end gap-2.5 pt-4 border-t border-slate-100">
+              {/* Submit */}
+              <div className="flex justify-end gap-2.5 pt-2 border-t border-white/8">
                 <button
                   type="button"
                   onClick={() => setShowModal(false)}
-                  className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 transition-colors"
+                  className="rounded-xl border border-white/10 px-4 py-2.5 text-xs font-semibold text-slate-400 hover:text-white hover:bg-white/8 transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={submitting || !title.trim()}
-                  className="rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 px-5 py-2 text-xs font-bold text-white shadow-md shadow-indigo-600/20 hover:opacity-95 disabled:opacity-50 transition-all flex items-center gap-1.5"
+                  className="rounded-xl bg-violet-600 hover:bg-violet-500 px-5 py-2.5 text-xs font-bold text-white shadow-lg shadow-violet-600/20 disabled:opacity-50 transition-all flex items-center gap-1.5"
                 >
                   {submitting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
                   <span>{submitting ? 'Saving...' : editingMeeting ? 'Update Meeting' : 'Schedule & Notify'}</span>

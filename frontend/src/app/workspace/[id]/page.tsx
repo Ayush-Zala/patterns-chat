@@ -2246,7 +2246,36 @@ function WorkspaceShellContent() {
       from: { id: string; name: string; avatarUrl?: string };
       isVideo: boolean;
       signalData: any;
+      meetingId?: string;
     }) {
+      // If this is a group meeting invite (has meetingId) — join group meeting directly
+      if (data.meetingId) {
+        stopRingTone();
+        setActiveTeamMeeting({
+          id: data.meetingId,
+          workspaceId: workspaceId || '',
+          title: `Meeting with ${data.from.name}`,
+          scheduledAt: new Date().toISOString(),
+          duration: 60,
+          hostId: data.from.id,
+          status: 'LIVE' as const,
+          createdAt: new Date().toISOString(),
+          host: { id: data.from.id, name: data.from.name, email: '' },
+          participants: [],
+        });
+        // Show system notification
+        if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+          try {
+            new Notification(`📹 ${data.from.name} invited you to a group meeting`, {
+              body: 'Click to join the team video meeting now',
+              icon: data.from.avatarUrl,
+              requireInteraction: false,
+            });
+          } catch { /* silent */ }
+        }
+        return;
+      }
+
       if (callStatusRef.current !== 'idle') {
         socket.emit('decline_call', { toUserId: data.from.id });
         return;
@@ -2256,6 +2285,7 @@ function WorkspaceShellContent() {
       setCallType(data.isVideo ? 'video' : 'audio');
       setCallStatus('incoming');
       startIncomingRingtone();
+
 
       // Trigger Cross-App System-Level Desktop Notification (Visible in Windows Action Center & over Excel, Chrome, etc.)
       try {

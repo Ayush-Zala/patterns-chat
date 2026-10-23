@@ -282,6 +282,7 @@ export class MessagesGateway implements OnGatewayConnection, OnGatewayDisconnect
       caller: { id: string; name: string; avatarUrl?: string };
       isVideo?: boolean;
       signalData?: any;
+      meetingId?: string; // Optional: if set, recipient joins group meeting overlay
     },
   ) {
     if (data?.toUserId) {
@@ -290,8 +291,9 @@ export class MessagesGateway implements OnGatewayConnection, OnGatewayDisconnect
         from: data.caller,
         isVideo: !!data.isVideo,
         signalData: data.signalData,
+        meetingId: data.meetingId, // Forward meetingId to auto-join group meeting
       });
-      this.logger.log(`📞 Call initiated from ${data.caller?.name} to user ${data.toUserId}`);
+      this.logger.log(`📞 Call initiated from ${data.caller?.name} to user ${data.toUserId}${data.meetingId ? ` (group meeting: ${data.meetingId})` : ''}`);
     }
   }
 
