@@ -51,4 +51,32 @@ export class AuthController {
   ) {
     return this.authService.updateProfile(user.id, body);
   }
+
+  // Google OAuth Endpoints
+  @Get('oauth/google/url')
+  getGoogleAuthUrl() {
+    return this.authService.getGoogleAuthUrl();
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('oauth/google/callback')
+  async handleGoogleCallback(
+    @Body('code') code: string,
+    @Body('currentUserId') currentUserId?: string,
+  ) {
+    return this.authService.handleGoogleCallback(code, undefined, currentUserId);
+  }
+
+  // Microsoft OAuth Endpoints
+  @Get('oauth/microsoft/url')
+  getMicrosoftAuthUrl() {
+    return this.authService.getMicrosoftAuthUrl();
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('oauth/microsoft/callback')
+  async handleMicrosoftCallback(@Body('code') code: string) {
+    return this.authService.handleMicrosoftCallback(code);
+  }
 }
+
