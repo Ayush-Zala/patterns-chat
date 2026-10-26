@@ -1,9 +1,32 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Prisma } from '@prisma/client';
+
+export enum EmailProvider {
+  GOOGLE = 'GOOGLE',
+  MICROSOFT = 'MICROSOFT',
+  CUSTOM = 'CUSTOM',
+}
+
+export enum EmailFolder {
+  INBOX = 'INBOX',
+  SENT = 'SENT',
+  DRAFTS = 'DRAFTS',
+  STARRED = 'STARRED',
+  TRASH = 'TRASH',
+  ARCHIVE = 'ARCHIVE',
+}
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PrismaService.name);
+
+  get emailAccount(): any {
+    return (this as any)['emailAccount'];
+  }
+
+  get emailMessage(): any {
+    return (this as any)['emailMessage'];
+  }
 
   async onModuleInit() {
     try {

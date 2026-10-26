@@ -8,11 +8,12 @@ import {
   Param,
   Query,
   UseGuards,
+  Res,
 } from '@nestjs/common';
 import { MailService } from './mail.service.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { CurrentUser } from '../auth/current-user.decorator.js';
-import { EmailProvider } from '@prisma/client';
+import { EmailProvider } from '../common/prisma.service.js';
 
 @UseGuards(JwtAuthGuard)
 @Controller('mail')
@@ -20,8 +21,11 @@ export class MailController {
   constructor(private readonly mailService: MailService) {}
 
   @Get('accounts')
-  async getAccounts(@CurrentUser() user: { id: string }) {
-    return this.mailService.getAccounts(user.id);
+  async getAccounts(
+    @CurrentUser() user: { id: string },
+    @Query('workspaceId') workspaceId?: string,
+  ) {
+    return this.mailService.getAccounts(user.id, workspaceId);
   }
 
   @Get('auth/google/url')
@@ -35,9 +39,9 @@ export class MailController {
   @Post('auth/google/callback')
   async handleGoogleCallback(
     @CurrentUser() user: { id: string },
-    @Body() body: { code: string; emailAddress?: string; redirectUri?: string },
+    @Body() body: { code: string; emailAddress?: string; redirectUri?: string; workspaceId?: string; channelId?: string; isShared?: boolean },
   ) {
-    return this.mailService.handleGoogleCallback(user.id, body.code, body.redirectUri, body.emailAddress);
+    return this.mailService.handleGoogleCallback(user.id, body.code, body.redirectUri, body.emailAddress, body.workspaceId, body.channelId, body.isShared);
   }
 
   @Get('auth/microsoft/url')
@@ -51,9 +55,9 @@ export class MailController {
   @Post('auth/microsoft/callback')
   async handleMicrosoftCallback(
     @CurrentUser() user: { id: string },
-    @Body() body: { code: string; emailAddress?: string; redirectUri?: string },
+    @Body() body: { code: string; emailAddress?: string; redirectUri?: string; workspaceId?: string; channelId?: string; isShared?: boolean },
   ) {
-    return this.mailService.handleMicrosoftCallback(user.id, body.code, body.redirectUri, body.emailAddress);
+    return this.mailService.handleMicrosoftCallback(user.id, body.code, body.redirectUri, body.emailAddress, body.workspaceId, body.channelId, body.isShared);
   }
 
   @Post('accounts/connect')
@@ -64,6 +68,9 @@ export class MailController {
       emailAddress: string;
       provider?: EmailProvider;
       displayName?: string;
+      channelId?: string;
+      workspaceId?: string;
+      isShared?: boolean;
     },
   ) {
     return this.mailService.connectAccount(user.id, body);
@@ -97,14 +104,18 @@ export class MailController {
   async getMessages(
     @CurrentUser() user: { id: string },
     @Query('accountId') accountId?: string,
+    @Query('workspaceId') workspaceId?: string,
     @Query('folder') folder?: string,
+    @Query('status') status?: 'all' | 'unhandled' | 'done',
     @Query('search') search?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
     return this.mailService.getMessages(user.id, {
       accountId,
+      workspaceId,
       folder,
+      status,
       search,
       page: page ? parseInt(page, 10) : 1,
       limit: limit ? parseInt(limit, 10) : 20,
@@ -119,6 +130,24 @@ export class MailController {
     return this.mailService.getMessageById(user.id, id);
   }
 
+  @Get('messages/:messageId/attachments/:attachmentId')
+  async getAttachment(
+    @CurrentUser() user: { id: string },
+    @Param('messageId') messageId: string,
+    @Param('attachmentId') attachmentId: string,
+    @Res() res: any,
+  ) {
+    const file = await this.mailService.getAttachment(user.id, messageId, attachmentId);
+    res.setHeader('Content-Type', file.contentType || 'application/octet-stream');
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="${encodeURIComponent(file.fileName)}"`,
+    );
+    res.setHeader('Content-Length', file.size.toString());
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    return res.end(file.buffer);
+  }
+
   @Patch('messages/:id/read')
   async toggleRead(
     @CurrentUser() user: { id: string },
@@ -126,6 +155,15 @@ export class MailController {
     @Body() body: { isRead?: boolean },
   ) {
     return this.mailService.toggleRead(user.id, id, body?.isRead);
+  }
+
+  @Patch('messages/:id/handled')
+  async toggleHandled(
+    @CurrentUser() user: { id: string },
+    @Param('id') id: string,
+    @Body() body: { isHandled?: boolean },
+  ) {
+    return this.mailService.toggleHandled(user.id, id, body?.isHandled);
   }
 
   @Patch('messages/:id/star')
@@ -155,6 +193,13 @@ export class MailController {
       subject: string;
       bodyHtml: string;
       bodyText?: string;
+      replyToMessageId?: string;
+      attachments?: Array<{
+        fileName: string;
+        contentType: string;
+        base64Data: string;
+        fileSize?: number;
+      }>;
     },
   ) {
     return this.mailService.sendMessage(user.id, body);

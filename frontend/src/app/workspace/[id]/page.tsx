@@ -13,6 +13,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  ChevronLeft,
   Loader2,
   MessageSquare,
   Smile,
@@ -143,7 +144,17 @@ export interface EmailAccountItem {
   provider: 'GOOGLE' | 'MICROSOFT' | 'CUSTOM';
   avatarUrl?: string;
   isActive: boolean;
+  isShared?: boolean;
+  channelId?: string | null;
+  channelName?: string | null;
+  workspaceId?: string | null;
+  isAdminMaster?: boolean;
+  ownerId?: string;
+  ownerName?: string;
+  isOwner?: boolean;
   unreadCount: number;
+  unhandledCount?: number;
+  handledCount?: number;
   requiresReauth?: boolean;
   inboxUnreadCount?: number;
   inboxTotalCount?: number;
@@ -170,6 +181,12 @@ export interface EmailMessageItem {
   bodyText?: string;
   isRead: boolean;
   isStarred: boolean;
+  isHandled?: boolean;
+  handledById?: string | null;
+  handledByName?: string | null;
+  handledAt?: string | null;
+  sentById?: string | null;
+  sentByName?: string | null;
   hasAttachments: boolean;
   attachments?: Array<{ fileName: string; fileUrl: string; fileSize: number; contentType: string }>;
   attachmentsJson?: Array<{ fileName: string; fileUrl: string; fileSize: number; contentType: string }>;
@@ -748,6 +765,8 @@ function WorkspaceShellContent() {
   const [newChannelTopic, setNewChannelTopic] = useState('');
   const [newChannelIsPrivate, setNewChannelIsPrivate] = useState(false);
   const [newChannelSelectedMembers, setNewChannelSelectedMembers] = useState<string[]>([]);
+  const [newChannelEnableMail, setNewChannelEnableMail] = useState(false);
+  const [newChannelGroupEmail, setNewChannelGroupEmail] = useState('');
   const [channelCreating, setChannelCreating] = useState(false);
   const [channelError, setChannelError] = useState<string | null>(null);
 
@@ -757,6 +776,7 @@ function WorkspaceShellContent() {
   const [editChannelName, setEditChannelName] = useState('');
   const [editChannelTopic, setEditChannelTopic] = useState('');
   const [editChannelIsPrivate, setEditChannelIsPrivate] = useState(false);
+  const [editChannelGroupEmail, setEditChannelGroupEmail] = useState('');
   const [editChannelLoading, setEditChannelLoading] = useState(false);
   const [editChannelError, setEditChannelError] = useState<string | null>(null);
   const [channelToDelete, setChannelToDelete] = useState<Channel | null>(null);
@@ -825,9 +845,12 @@ function WorkspaceShellContent() {
   const [selectedEmail, setSelectedEmail] = useState<EmailMessageItem | null>(null);
   const [isMailLoading, setIsMailLoading] = useState(false);
   const [mailSearchQuery, setMailSearchQuery] = useState('');
+  const [mailStatusFilter, setMailStatusFilter] = useState<'unhandled' | 'done' | 'all'>('unhandled');
   const [showConnectMailModal, setShowConnectMailModal] = useState(false);
   const [connectEmailInput, setConnectEmailInput] = useState('');
   const [connectEmailProvider, setConnectEmailProvider] = useState<'GOOGLE' | 'MICROSOFT' | 'CUSTOM'>('GOOGLE');
+  const [connectMailMode, setConnectMailMode] = useState<'personal' | 'group'>('group');
+  const [connectMailChannelId, setConnectMailChannelId] = useState<string>('');
   const [showComposeMailModal, setShowComposeMailModal] = useState(false);
   const [composeMailData, setComposeMailData] = useState({
     to: '',
@@ -843,6 +866,26 @@ function WorkspaceShellContent() {
   const [showCalendarModal, setShowCalendarModal] = useState(false);
   const [emailFilterMode, setEmailFilterMode] = useState<'all' | 'unread' | 'starred'>('all');
   const [inlineReplyText, setInlineReplyText] = useState('');
+  const [mailPage, setMailPage] = useState(1);
+  const [mailTotalMessages, setMailTotalMessages] = useState(0);
+  const [mailTotalPages, setMailTotalPages] = useState(1);
+  const [composeAttachments, setComposeAttachments] = useState<
+    Array<{ fileName: string; contentType: string; base64Data: string; fileSize: number }>
+  >([]);
+  const [inlineReplyAttachments, setInlineReplyAttachments] = useState<
+    Array<{ fileName: string; contentType: string; base64Data: string; fileSize: number }>
+  >([]);
+  const [previewAttachment, setPreviewAttachment] = useState<{
+    fileName: string;
+    fileUrl: string;
+    contentType: string;
+    fileSize?: number;
+  } | null>(null);
+  const selectedEmailRef = useRef<EmailMessageItem | null>(null);
+
+  useEffect(() => {
+    selectedEmailRef.current = selectedEmail;
+  }, [selectedEmail]);
 
   const selectedMailAccount = useMemo(() => {
     return mailAccounts.find((a) => a.id === selectedMailAccountId) || mailAccounts[0] || null;
@@ -854,16 +897,19 @@ function WorkspaceShellContent() {
 
   const filteredMailMessages = useMemo(() => {
     return mailMessages.filter((msg) => {
+      if (mailStatusFilter === 'unhandled' && msg.isHandled) return false;
+      if (mailStatusFilter === 'done' && !msg.isHandled) return false;
       if (emailFilterMode === 'unread') return !msg.isRead;
       if (emailFilterMode === 'starred') return msg.isStarred;
       return true;
     });
-  }, [mailMessages, emailFilterMode]);
+  }, [mailMessages, mailStatusFilter, emailFilterMode]);
 
   async function loadMailAccounts() {
     if (!token) return;
     try {
-      const res = await fetch(`${API_URL}/mail/accounts`, {
+      const q = workspaceId ? `?workspaceId=${workspaceId}` : '';
+      const res = await fetch(`${API_URL}/mail/accounts${q}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
@@ -878,7 +924,7 @@ function WorkspaceShellContent() {
     }
   }
 
-  async function loadMailMessages(accId?: string | null, fld?: string, q?: string) {
+  async function loadMailMessages(accId?: string | null, fld?: string, q?: string, pageNum = 1) {
     if (!token) return;
     const targetAccountId = accId || selectedMailAccountId;
     try {
@@ -887,6 +933,9 @@ function WorkspaceShellContent() {
       if (targetAccountId) params.set('accountId', targetAccountId);
       if (fld) params.set('folder', fld);
       if (q) params.set('search', q);
+      if (workspaceId) params.set('workspaceId', workspaceId);
+      params.set('limit', '100');
+      params.set('page', String(pageNum));
 
       const res = await fetch(`${API_URL}/mail/messages?${params.toString()}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -895,6 +944,9 @@ function WorkspaceShellContent() {
         const data = await res.json();
         const messages: EmailMessageItem[] = data.messages || [];
         setMailMessages(messages);
+        setMailPage(data.page || pageNum);
+        setMailTotalMessages(data.total || messages.length);
+        setMailTotalPages(data.totalPages || 1);
 
         // Ensure reading pane only shows an email belonging to THIS account
         if (messages.length > 0) {
@@ -909,6 +961,71 @@ function WorkspaceShellContent() {
       console.error('Failed to load emails:', e);
     } finally {
       setIsMailLoading(false);
+    }
+  }
+
+  async function handleToggleHandledEmail(messageId: string, currentHandled?: boolean, e?: React.MouseEvent) {
+    if (e) e.stopPropagation();
+    const newHandled = !currentHandled;
+
+    setMailMessages((prev) =>
+      prev.map((m) =>
+        m.id === messageId
+          ? {
+              ...m,
+              isHandled: newHandled,
+              handledByName: newHandled ? (user?.name || 'You') : null,
+              handledAt: newHandled ? new Date().toISOString() : null,
+            }
+          : m,
+      ),
+    );
+    if (selectedEmail?.id === messageId) {
+      setSelectedEmail((prev) =>
+        prev
+          ? {
+              ...prev,
+              isHandled: newHandled,
+              handledByName: newHandled ? (user?.name || 'You') : null,
+              handledAt: newHandled ? new Date().toISOString() : null,
+            }
+          : null,
+      );
+    }
+
+    const targetMsg = mailMessages.find((m) => m.id === messageId) || selectedEmail;
+    const targetAccId = targetMsg?.accountId || selectedMailAccountId;
+    if (targetAccId) {
+      setMailAccounts((prev) =>
+        prev.map((a) => {
+          if (a.id === targetAccId) {
+            const delta = newHandled ? -1 : 1;
+            return {
+              ...a,
+              unhandledCount: Math.max(0, (a.unhandledCount || 0) + delta),
+              handledCount: Math.max(0, (a.handledCount || 0) - delta),
+            };
+          }
+          return a;
+        }),
+      );
+    }
+
+    try {
+      await fetch(`${API_URL}/mail/messages/${messageId}/handled`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ isHandled: newHandled }),
+      });
+      setCallNotificationMsg(
+        newHandled ? '✅ Marked as Done (synced to all group members)' : 'Reopened / marked as Needs Action',
+      );
+      setTimeout(() => setCallNotificationMsg(null), 3000);
+    } catch (err) {
+      console.error('Failed to toggle handled status:', err);
     }
   }
 
@@ -1111,6 +1228,22 @@ function WorkspaceShellContent() {
   }
 
   async function handleConnectEmail(provider: 'GOOGLE' | 'MICROSOFT' | 'CUSTOM', customEmail?: string) {
+    if (connectMailMode === 'group') {
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('teamflow_mail_workspace_id', (workspaceId || '') as string);
+        if (connectMailChannelId) {
+          localStorage.setItem('teamflow_mail_channel_id', connectMailChannelId);
+        }
+        localStorage.setItem('teamflow_mail_is_shared', 'true');
+      }
+    } else {
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('teamflow_mail_workspace_id');
+        localStorage.removeItem('teamflow_mail_channel_id');
+        localStorage.removeItem('teamflow_mail_is_shared');
+      }
+    }
+
     if (provider === 'GOOGLE' && !customEmail) {
       try {
         setIsMailLoading(true);
@@ -1122,12 +1255,32 @@ function WorkspaceShellContent() {
         });
         const data = await res.json();
         const url = data.authUrl || data.url;
-        if (url) {
+
+        // If Google Cloud Client ID is configured on backend, proceed to real Google OAuth
+        if (data.clientIdConfigured && url) {
           localStorage.setItem('teamflow_oauth_mode', 'connect_mail');
           localStorage.setItem('teamflow_oauth_return_tab', window.location.pathname + '?tab=mail');
           window.location.href = url;
           return;
         }
+
+        // When GOOGLE_CLIENT_ID is not configured in local .env, connect directly with local development simulation
+        const defaultLocalEmail =
+          connectMailMode === 'group'
+            ? `${channels.find((c) => c.id === connectMailChannelId)?.name || 'support'}@gmail.com`
+            : user?.email || `${user?.name?.toLowerCase().replace(/\s+/g, '') || 'user'}@gmail.com`;
+
+        const enteredEmail = prompt(
+          `Google OAuth Client ID is not configured in your local backend .env.\n\nEnter your Google or company email to connect locally:`,
+          defaultLocalEmail,
+        );
+
+        if (!enteredEmail || !enteredEmail.includes('@')) {
+          setIsMailLoading(false);
+          return;
+        }
+
+        customEmail = enteredEmail.trim();
       } catch (err) {
         console.error('Failed to get Google OAuth URL:', err);
       } finally {
@@ -1146,12 +1299,31 @@ function WorkspaceShellContent() {
         });
         const data = await res.json();
         const url = data.authUrl || data.url;
-        if (url) {
+
+        // If Microsoft Client ID is configured, proceed to real Microsoft OAuth
+        if (data.clientIdConfigured && url) {
           localStorage.setItem('teamflow_oauth_mode', 'connect_mail');
           localStorage.setItem('teamflow_oauth_return_tab', window.location.pathname + '?tab=mail');
           window.location.href = url;
           return;
         }
+
+        const defaultLocalEmail =
+          connectMailMode === 'group'
+            ? `${channels.find((c) => c.id === connectMailChannelId)?.name || 'team'}@outlook.com`
+            : user?.email || 'user@outlook.com';
+
+        const enteredEmail = prompt(
+          `Microsoft OAuth Client ID is not configured in your local backend .env.\n\nEnter your Microsoft email to connect locally:`,
+          defaultLocalEmail,
+        );
+
+        if (!enteredEmail || !enteredEmail.includes('@')) {
+          setIsMailLoading(false);
+          return;
+        }
+
+        customEmail = enteredEmail.trim();
       } catch (err) {
         console.error('Failed to get Microsoft OAuth URL:', err);
       } finally {
@@ -1176,6 +1348,9 @@ function WorkspaceShellContent() {
           emailAddress,
           provider,
           displayName: user?.name || emailAddress.split('@')[0],
+          workspaceId: workspaceId || undefined,
+          channelId: connectMailMode === 'group' && connectMailChannelId ? connectMailChannelId : undefined,
+          isShared: connectMailMode === 'group',
         }),
       });
 
@@ -1187,7 +1362,11 @@ function WorkspaceShellContent() {
         setSelectedMailAccountId(newAcc.id);
         setMailFolder('INBOX');
         await loadMailMessages(newAcc.id, 'INBOX');
-        setCallNotificationMsg(`Connected ${provider} email: ${newAcc.emailAddress}`);
+        setCallNotificationMsg(
+          connectMailMode === 'group'
+            ? `Connected group mailbox #${channels.find(c => c.id === connectMailChannelId)?.name || 'channel'}: ${newAcc.emailAddress}`
+            : `Connected personal email: ${newAcc.emailAddress}`
+        );
         setTimeout(() => setCallNotificationMsg(null), 4000);
       }
     } catch (e) {
@@ -1199,6 +1378,36 @@ function WorkspaceShellContent() {
   const googleClientId =
     process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ||
     '758995093643-eackobpibmmqga6lfd6fht757l2dd5h8.apps.googleusercontent.com';
+
+  function handleFileAttach(e: React.ChangeEvent<HTMLInputElement>, target: 'compose' | 'inline') {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    Array.from(files).forEach((file) => {
+      if (file.size > 15 * 1024 * 1024) {
+        alert(`File "${file.name}" exceeds 15MB limit.`);
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const base64Data = reader.result as string;
+        const newAtt = {
+          fileName: file.name,
+          contentType: file.type || 'application/octet-stream',
+          base64Data,
+          fileSize: file.size,
+        };
+        if (target === 'compose') {
+          setComposeAttachments((prev) => [...prev, newAtt]);
+        } else {
+          setInlineReplyAttachments((prev) => [...prev, newAtt]);
+        }
+      };
+      reader.readAsDataURL(file);
+    });
+
+    e.target.value = '';
+  }
 
   async function handleSendEmail() {
     if (!selectedMailAccountId || !composeMailData.to.trim()) {
@@ -1223,6 +1432,7 @@ function WorkspaceShellContent() {
           subject: composeMailData.subject.trim() || '(No Subject)',
           bodyHtml: `<p>${composeMailData.body.replace(/\n/g, '<br/>')}</p>`,
           bodyText: composeMailData.body,
+          attachments: composeAttachments.length > 0 ? composeAttachments : undefined,
         }),
       });
 
@@ -1230,6 +1440,7 @@ function WorkspaceShellContent() {
         const sendResult = await res.json();
         setShowComposeMailModal(false);
         setComposeMailData({ to: '', cc: '', subject: '', body: '' });
+        setComposeAttachments([]);
         if (sendResult.sentViaGmail) {
           setCallNotificationMsg('Email sent successfully via Gmail API!');
         } else if (sendResult.gmailError === 'REQUIRES_REAUTH') {
@@ -1252,9 +1463,10 @@ function WorkspaceShellContent() {
   }
 
   async function handleSendInlineReply() {
-    if (!selectedMailAccountId || !selectedEmail || !inlineReplyText.trim()) return;
+    if (!selectedMailAccountId || !selectedEmail || (!inlineReplyText.trim() && inlineReplyAttachments.length === 0)) return;
     try {
       setIsSendingMail(true);
+      const replyMsgId = selectedEmail.id;
       const res = await fetch(`${API_URL}/mail/messages/send`, {
         method: 'POST',
         headers: {
@@ -1263,22 +1475,61 @@ function WorkspaceShellContent() {
         },
         body: JSON.stringify({
           accountId: selectedMailAccountId,
+          replyToMessageId: replyMsgId,
           to: [selectedEmail.fromAddress],
           subject: selectedEmail.subject.startsWith('Re:') ? selectedEmail.subject : `Re: ${selectedEmail.subject}`,
-          bodyHtml: `<p>${inlineReplyText.replace(/\n/g, '<br/>')}</p><br/><blockquote>On ${new Date(selectedEmail.receivedAt).toLocaleString()}, ${selectedEmail.fromName || selectedEmail.fromAddress} wrote:<br/>${selectedEmail.bodyHtml || selectedEmail.snippet}</blockquote>`,
-          bodyText: inlineReplyText,
+          bodyHtml: `<p>${(inlineReplyText || 'Please see attached.').replace(/\n/g, '<br/>')}</p><br/><blockquote>On ${new Date(selectedEmail.receivedAt).toLocaleString()}, ${selectedEmail.fromName || selectedEmail.fromAddress} wrote:<br/>${selectedEmail.bodyHtml || selectedEmail.snippet}</blockquote>`,
+          bodyText: inlineReplyText || 'Please see attached.',
+          attachments: inlineReplyAttachments.length > 0 ? inlineReplyAttachments : undefined,
         }),
       });
 
       if (res.ok) {
         const sendResult = await res.json();
         setInlineReplyText('');
+        setInlineReplyAttachments([]);
+
+        // Optimistically mark thread handled by current user
+        setSelectedEmail((prev) =>
+          prev
+            ? {
+                ...prev,
+                isHandled: true,
+                handledByName: user?.name || 'You',
+                handledAt: new Date().toISOString(),
+              }
+            : null,
+        );
+        setMailMessages((prev) =>
+          prev.map((m) =>
+            m.id === replyMsgId
+              ? {
+                  ...m,
+                  isHandled: true,
+                  handledByName: user?.name || 'You',
+                  handledAt: new Date().toISOString(),
+                }
+              : m,
+          ),
+        );
+        setMailAccounts((prev) =>
+          prev.map((a) =>
+            a.id === selectedMailAccountId
+              ? {
+                  ...a,
+                  unhandledCount: Math.max(0, (a.unhandledCount || 1) - 1),
+                  handledCount: (a.handledCount || 0) + 1,
+                }
+              : a,
+          ),
+        );
+
         if (sendResult.sentViaGmail) {
-          setCallNotificationMsg('Reply sent successfully via Gmail API!');
+          setCallNotificationMsg('Reply sent via Gmail & thread marked Done!');
         } else if (sendResult.gmailError === 'REQUIRES_REAUTH') {
           setCallNotificationMsg('Delivered internally. For external Gmail send, re-connect via "+"');
         } else {
-          setCallNotificationMsg('Reply sent successfully!');
+          setCallNotificationMsg('Reply sent & thread marked Done!');
         }
         setTimeout(() => setCallNotificationMsg(null), 3500);
         await loadMailAccounts();
@@ -3536,11 +3787,122 @@ function WorkspaceShellContent() {
       }
     }
 
+    function handleEmailHandledUpdated(data: {
+      messageId: string;
+      accountId: string;
+      isHandled: boolean;
+      handledById: string | null;
+      handledByName: string | null;
+      handledAt: string | null;
+    }) {
+      setMailMessages((prev) =>
+        prev.map((m) =>
+          m.id === data.messageId
+            ? {
+                ...m,
+                isHandled: data.isHandled,
+                handledById: data.handledById,
+                handledByName: data.handledByName,
+                handledAt: data.handledAt,
+              }
+            : m,
+        ),
+      );
+      if (selectedEmailRef.current?.id === data.messageId) {
+        setSelectedEmail((prev) =>
+          prev
+            ? {
+                ...prev,
+                isHandled: data.isHandled,
+                handledById: data.handledById,
+                handledByName: data.handledByName,
+                handledAt: data.handledAt,
+              }
+            : null,
+        );
+      }
+      setMailAccounts((prev) =>
+        prev.map((a) => {
+          if (a.id === data.accountId) {
+            const delta = data.isHandled ? -1 : 1;
+            return {
+              ...a,
+              unhandledCount: Math.max(0, (a.unhandledCount || 0) + delta),
+              handledCount: Math.max(0, (a.handledCount || 0) - delta),
+            };
+          }
+          return a;
+        }),
+      );
+    }
+
+    function handleEmailReadUpdated(data: {
+      messageId: string;
+      accountId: string;
+      isRead: boolean;
+    }) {
+      setMailMessages((prev) =>
+        prev.map((m) => (m.id === data.messageId ? { ...m, isRead: data.isRead } : m)),
+      );
+      if (selectedEmailRef.current?.id === data.messageId) {
+        setSelectedEmail((prev) => (prev ? { ...prev, isRead: data.isRead } : null));
+      }
+      setMailAccounts((prev) =>
+        prev.map((a) => {
+          if (a.id === data.accountId) {
+            const delta = data.isRead ? -1 : 1;
+            const newCount = Math.max(0, (a.unreadCount || 0) + delta);
+            return { ...a, unreadCount: newCount, inboxUnreadCount: newCount };
+          }
+          return a;
+        }),
+      );
+    }
+
+    function handleNewGroupEmail(data: {
+      messageId: string;
+      accountId: string;
+      channelId?: string;
+      channelName?: string;
+      subject: string;
+      fromName?: string;
+      fromAddress: string;
+    }) {
+      playNotificationChime();
+
+      if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+        try {
+          new Notification(`📩 Group Email in #${data.channelName || 'group'}`, {
+            body: `${data.fromName || data.fromAddress}: ${data.subject}`,
+            icon: '/favicon.ico',
+          });
+        } catch (nErr) {
+          console.warn('Desktop notification failed:', nErr);
+        }
+      }
+
+      setCallNotificationMsg(`📩 New Email in #${data.channelName || 'group'}: ${data.subject}`);
+      setTimeout(() => setCallNotificationMsg(null), 5000);
+
+      loadMailAccounts();
+      if (selectedMailAccountId === data.accountId) {
+        loadMailMessages(data.accountId, mailFolder, mailSearchQuery);
+      }
+    }
+
+    // Auto-request desktop notification permission on desktop/laptop
+    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {});
+    }
+
     socket.on('new_notification', handleNewNotification);
     socket.on('message_pinned', handleMessagePinned);
     socket.on('direct_message_pinned', handleDirectMessagePinned);
     socket.on('workspace_channel_message', handleWorkspaceChannelMessage);
     socket.on('new_direct_message', handleGlobalDirectMessage);
+    socket.on('email_handled_updated', handleEmailHandledUpdated);
+    socket.on('email_read_updated', handleEmailReadUpdated);
+    socket.on('new_group_email', handleNewGroupEmail);
 
     return () => {
       if (workspaceId) {
@@ -3552,8 +3914,11 @@ function WorkspaceShellContent() {
       socket.off('direct_message_pinned', handleDirectMessagePinned);
       socket.off('workspace_channel_message', handleWorkspaceChannelMessage);
       socket.off('new_direct_message', handleGlobalDirectMessage);
+      socket.off('email_handled_updated', handleEmailHandledUpdated);
+      socket.off('email_read_updated', handleEmailReadUpdated);
+      socket.off('new_group_email', handleNewGroupEmail);
     };
-  }, [workspaceId, user?.id, soundEnabled]);
+  }, [workspaceId, user?.id, soundEnabled, selectedMailAccountId, mailFolder, mailSearchQuery]);
 
   // Notifications Actions
   async function handleMarkNotificationAsRead(id: string) {
@@ -4551,11 +4916,38 @@ function WorkspaceShellContent() {
       if (data.members) {
         setActiveChannelMembers(data.members);
       }
+
+      // Automatically link and sync shared mailbox for this channel
+      if (newChannelEnableMail && newChannelGroupEmail.trim()) {
+        try {
+          await fetch(`${API_URL}/mail/accounts/connect`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              emailAddress: newChannelGroupEmail.trim().toLowerCase(),
+              provider: 'CUSTOM',
+              workspaceId,
+              channelId: data.id,
+              isShared: true,
+              displayName: `#${formattedName} Group Inbox`,
+            }),
+          });
+          loadMailAccounts();
+        } catch (mErr) {
+          console.warn('Failed to link group email on channel creation:', mErr);
+        }
+      }
+
       setShowCreateChannelModal(false);
       setNewChannelName('');
       setNewChannelTopic('');
       setNewChannelIsPrivate(false);
       setNewChannelSelectedMembers([]);
+      setNewChannelEnableMail(false);
+      setNewChannelGroupEmail('');
     } catch (err) {
       setChannelError(err instanceof Error ? err.message : 'Error creating channel');
     } finally {
@@ -4674,6 +5066,8 @@ function WorkspaceShellContent() {
     setEditChannelName(ch.name);
     setEditChannelTopic(ch.topic || '');
     setEditChannelIsPrivate(ch.isPrivate || false);
+    const linked = mailAccounts.find((a) => a.channelId === ch.id);
+    setEditChannelGroupEmail(linked?.emailAddress || '');
     setEditChannelError(null);
     setShowEditChannelModal(true);
   }
@@ -4705,6 +5099,34 @@ function WorkspaceShellContent() {
         if (activeChannel?.id === target.id) {
           setActiveChannel((prev) => (prev ? { ...prev, ...data } : null));
         }
+
+        // Link or update group mailbox if changed
+        if (editChannelGroupEmail.trim()) {
+          const linked = mailAccounts.find((a) => a.channelId === target.id);
+          if (!linked || linked.emailAddress.toLowerCase() !== editChannelGroupEmail.trim().toLowerCase()) {
+            try {
+              await fetch(`${API_URL}/mail/accounts/connect`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  Authorization: `Bearer ${token}`,
+                },
+                body: JSON.stringify({
+                  emailAddress: editChannelGroupEmail.trim().toLowerCase(),
+                  provider: 'CUSTOM',
+                  workspaceId,
+                  channelId: target.id,
+                  isShared: true,
+                  displayName: `#${editChannelName.trim()} Group Inbox`,
+                }),
+              });
+              loadMailAccounts();
+            } catch (mErr) {
+              console.warn('Failed to update group email on channel update:', mErr);
+            }
+          }
+        }
+
         setShowEditChannelModal(false);
         setChannelToEdit(null);
       } else {
@@ -5600,97 +6022,226 @@ function WorkspaceShellContent() {
                 </div>
               </div>
 
-              {/* CONNECTED ACCOUNTS SECTION */}
+              {/* GROUP INBOXES SECTION (Collaborative Shared Mailboxes) */}
               <div>
                 <div className="flex items-center justify-between px-2 py-1 text-slate-400">
-                  <span className="font-black text-[10px] uppercase tracking-wider text-slate-400">
-                    Accounts ({mailAccounts.length})
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <Users className="h-3 w-3 text-indigo-600" />
+                    <span className="font-black text-[10px] uppercase tracking-wider text-slate-500">
+                      Group Inboxes ({mailAccounts.filter((a) => a.isShared).length})
+                    </span>
+                  </div>
                   <button
                     type="button"
-                    onClick={() => setShowConnectMailModal(true)}
+                    onClick={() => {
+                      setConnectMailMode('group');
+                      setShowConnectMailModal(true);
+                    }}
                     className="p-1 hover:bg-indigo-50 hover:text-indigo-600 rounded-lg text-slate-400 transition-colors"
-                    title="Connect another email account"
+                    title="Attach email inbox to a Channel/Group"
                   >
                     <Plus className="h-3.5 w-3.5" />
                   </button>
                 </div>
 
                 <div className="space-y-1 mt-1">
-                  {mailAccounts.length === 0 ? (
-                    <div className="p-3 text-center bg-slate-50/80 rounded-2xl border border-dashed border-slate-200 my-1">
-                      <p className="text-[11px] font-bold text-slate-700">No account connected</p>
-                      <p className="text-[10px] text-slate-400 mt-0.5">Link Gmail via Google OAuth</p>
+                  {mailAccounts.filter((a) => a.isShared).length === 0 ? (
+                    <div className="p-2.5 text-center bg-indigo-50/40 rounded-xl border border-dashed border-indigo-200/60 my-1">
+                      <p className="text-[11px] font-bold text-slate-700">No group mailboxes</p>
+                      <p className="text-[10px] text-slate-400 mt-0.5">Link a team email to any channel</p>
                       <button
                         type="button"
-                        onClick={() => setShowConnectMailModal(true)}
-                        className="mt-2 w-full py-1.5 px-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-[11px] font-bold shadow-xs transition-all flex items-center justify-center gap-1.5"
+                        onClick={() => {
+                          setConnectMailMode('group');
+                          setShowConnectMailModal(true);
+                        }}
+                        className="mt-1.5 w-full py-1 px-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-[10px] font-bold shadow-xs transition-all flex items-center justify-center gap-1"
                       >
                         <Plus className="h-3 w-3" />
-                        <span>Connect Account</span>
+                        <span>Add Group Mail</span>
                       </button>
                     </div>
                   ) : (
-                    mailAccounts.map((acc) => {
-                      const isSelected = selectedMailAccountId === acc.id;
-                      return (
-                        <button
-                          key={acc.id}
-                          type="button"
-                          onClick={() => {
-                            if (selectedMailAccountId !== acc.id) {
-                              setSelectedMailAccountId(acc.id);
-                              setSelectedEmail(null);
-                              loadMailMessages(acc.id, mailFolder, mailSearchQuery);
-                              handleSyncMailAccount(acc.id, true);
-                            }
-                          }}
-                          className={`w-full flex items-center justify-between p-2 rounded-xl text-xs text-left transition-all group ${
-                            isSelected
-                              ? 'bg-indigo-50/90 text-indigo-900 font-bold border border-indigo-200/80 shadow-2xs'
-                              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50 font-medium'
-                          }`}
-                        >
-                          <div className="flex items-center gap-2.5 min-w-0">
-                            <div className="relative shrink-0">
-                              <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-indigo-600 to-violet-600 text-white font-bold text-xs flex items-center justify-center shadow-2xs">
-                                {acc.emailAddress.slice(0, 1).toUpperCase()}
+                    mailAccounts
+                      .filter((a) => a.isShared)
+                      .map((acc) => {
+                        const isSelected = selectedMailAccountId === acc.id;
+                        return (
+                          <div
+                            key={acc.id}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => {
+                              if (selectedMailAccountId !== acc.id) {
+                                setSelectedMailAccountId(acc.id);
+                                setSelectedEmail(null);
+                                loadMailMessages(acc.id, mailFolder, mailSearchQuery);
+                                handleSyncMailAccount(acc.id, true);
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                setSelectedMailAccountId(acc.id);
+                                setSelectedEmail(null);
+                                loadMailMessages(acc.id, mailFolder, mailSearchQuery);
+                                handleSyncMailAccount(acc.id, true);
+                              }
+                            }}
+                            className={`w-full flex items-center justify-between p-2 rounded-xl text-xs text-left transition-all group cursor-pointer select-none ${
+                              isSelected
+                                ? 'bg-indigo-50/90 text-indigo-900 font-bold border border-indigo-200/80 shadow-2xs'
+                                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50 font-medium'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <div className="relative shrink-0">
+                                <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-violet-600 to-indigo-600 text-white font-black text-xs flex items-center justify-center shadow-2xs">
+                                  #
+                                </div>
+                                {isSelected && (
+                                  <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full bg-emerald-500 ring-2 ring-white" />
+                                )}
                               </div>
-                              {isSelected && (
-                                <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full bg-emerald-500 ring-2 ring-white" />
+                              <div className="truncate min-w-0">
+                                <div className="flex items-center gap-1 truncate">
+                                  <span className="font-extrabold text-xs text-slate-900 truncate">
+                                    #{acc.channelName || 'general'}
+                                  </span>
+                                  {acc.isAdminMaster && (
+                                    <span className="px-1 py-0.2 rounded bg-amber-100 text-amber-800 text-[8px] font-black uppercase shrink-0" title="Workspace Admin Full Master Access">
+                                      Admin
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="truncate text-[10px] text-slate-400 font-mono leading-tight">{acc.emailAddress}</p>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              {acc.unhandledCount !== undefined && acc.unhandledCount > 0 && (
+                                <span className="px-1.5 py-0.5 rounded-full bg-amber-500 text-white text-[8px] font-black shadow-2xs" title="Needs Action by team">
+                                  {acc.unhandledCount} act
+                                </span>
                               )}
-                            </div>
-                            <div className="truncate min-w-0">
-                              <p className="truncate text-xs leading-tight font-semibold">{acc.emailAddress}</p>
-                              <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">
-                                {acc.provider}
-                              </span>
+                              {acc.unreadCount !== undefined && acc.unreadCount > 0 && (
+                                <span className="px-1.5 py-0.5 rounded-full bg-indigo-600 text-white text-[8px] font-bold shadow-2xs">
+                                  {acc.unreadCount}
+                                </span>
+                              )}
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDisconnectAccount(acc.id);
+                                }}
+                                className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all cursor-pointer"
+                                title="Disconnect account"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
                             </div>
                           </div>
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            {acc.unreadCount !== undefined && acc.unreadCount > 0 && (
-                              <span className="px-1.5 py-0.5 rounded-full bg-indigo-600 text-white text-[9px] font-bold shadow-2xs">
-                                {acc.unreadCount}
-                              </span>
-                            )}
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDisconnectAccount(acc.id);
-                              }}
-                              className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all cursor-pointer"
-                              title="Disconnect account"
-                            >
-                              <Trash2 className="h-3 w-3" />
-                            </button>
-                            {isSelected && (
-                              <span className="h-1.5 w-1.5 rounded-full bg-indigo-600 shrink-0" />
-                            )}
+                        );
+                      })
+                  )}
+                </div>
+              </div>
+
+              {/* PERSONAL ACCOUNTS SECTION */}
+              <div>
+                <div className="flex items-center justify-between px-2 py-1 text-slate-400">
+                  <div className="flex items-center gap-1.5">
+                    <User className="h-3 w-3 text-slate-400" />
+                    <span className="font-black text-[10px] uppercase tracking-wider text-slate-500">
+                      Personal ({mailAccounts.filter((a) => !a.isShared).length})
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConnectMailMode('personal');
+                      setShowConnectMailModal(true);
+                    }}
+                    className="p-1 hover:bg-indigo-50 hover:text-indigo-600 rounded-lg text-slate-400 transition-colors"
+                    title="Connect personal email"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+
+                <div className="space-y-1 mt-1">
+                  {mailAccounts.filter((a) => !a.isShared).length === 0 ? (
+                    <div className="p-2 text-center text-[10px] text-slate-400 bg-slate-50 rounded-xl">
+                      No personal email linked
+                    </div>
+                  ) : (
+                    mailAccounts
+                      .filter((a) => !a.isShared)
+                      .map((acc) => {
+                        const isSelected = selectedMailAccountId === acc.id;
+                        return (
+                          <div
+                            key={acc.id}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => {
+                              if (selectedMailAccountId !== acc.id) {
+                                setSelectedMailAccountId(acc.id);
+                                setSelectedEmail(null);
+                                loadMailMessages(acc.id, mailFolder, mailSearchQuery);
+                                handleSyncMailAccount(acc.id, true);
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                setSelectedMailAccountId(acc.id);
+                                setSelectedEmail(null);
+                                loadMailMessages(acc.id, mailFolder, mailSearchQuery);
+                                handleSyncMailAccount(acc.id, true);
+                              }
+                            }}
+                            className={`w-full flex items-center justify-between p-2 rounded-xl text-xs text-left transition-all group cursor-pointer select-none ${
+                              isSelected
+                                ? 'bg-indigo-50/90 text-indigo-900 font-bold border border-indigo-200/80 shadow-2xs'
+                                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50 font-medium'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <div className="relative shrink-0">
+                                <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-indigo-600 to-violet-600 text-white font-bold text-xs flex items-center justify-center shadow-2xs">
+                                  {acc.emailAddress.slice(0, 1).toUpperCase()}
+                                </div>
+                                {isSelected && (
+                                  <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full bg-emerald-500 ring-2 ring-white" />
+                                )}
+                              </div>
+                              <div className="truncate min-w-0">
+                                <p className="truncate text-xs leading-tight font-semibold">{acc.emailAddress}</p>
+                                <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">
+                                  {acc.provider}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {acc.unreadCount !== undefined && acc.unreadCount > 0 && (
+                                <span className="px-1.5 py-0.5 rounded-full bg-indigo-600 text-white text-[9px] font-bold shadow-2xs">
+                                  {acc.unreadCount}
+                                </span>
+                              )}
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDisconnectAccount(acc.id);
+                                }}
+                                className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all cursor-pointer"
+                                title="Disconnect account"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            </div>
                           </div>
-                        </button>
-                      );
-                    })
+                        );
+                      })
                   )}
                 </div>
               </div>
@@ -5759,34 +6310,86 @@ function WorkspaceShellContent() {
                 </div>
               </div>
 
-              {/* Interactive Live Sync Pill Button */}
-              <button
-                type="button"
-                onClick={() => handleSyncMailAccount()}
-                className="flex items-center gap-1.5 rounded-full bg-emerald-50/90 hover:bg-emerald-100/90 border border-emerald-200/80 px-2.5 py-1 text-[10px] font-bold text-emerald-700 shadow-2xs shrink-0 transition-all active:scale-95 cursor-pointer"
-                title="Click to sync live emails with Gmail"
-              >
-                <span className={`h-1.5 w-1.5 rounded-full bg-emerald-500 ${isMailLoading ? 'animate-ping' : 'animate-pulse'}`} />
-                <span>{isMailLoading ? 'Syncing...' : 'Live Sync'}</span>
-              </button>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {mailTotalMessages > 0 && (
+                  <div className="flex items-center gap-1 bg-slate-50 border border-slate-200/90 rounded-full px-2 py-0.5 text-[9px] font-bold text-slate-600 shadow-2xs">
+                    <span>
+                      {Math.min((mailPage - 1) * 100 + 1, mailTotalMessages)}–{Math.min(mailPage * 100, mailTotalMessages)} of {mailTotalMessages}
+                    </span>
+                    <div className="flex items-center ml-0.5 border-l border-slate-200 pl-0.5">
+                      <button
+                        type="button"
+                        disabled={mailPage <= 1 || isMailLoading}
+                        onClick={() => loadMailMessages(selectedMailAccountId, mailFolder, mailSearchQuery, mailPage - 1)}
+                        className="p-0.5 hover:text-indigo-600 disabled:opacity-30 disabled:hover:text-slate-400 cursor-pointer"
+                        title="Previous page"
+                      >
+                        <ChevronLeft className="w-3 h-3" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={mailPage >= mailTotalPages || isMailLoading}
+                        onClick={() => loadMailMessages(selectedMailAccountId, mailFolder, mailSearchQuery, mailPage + 1)}
+                        className="p-0.5 hover:text-indigo-600 disabled:opacity-30 disabled:hover:text-slate-400 cursor-pointer"
+                        title="Next page"
+                      >
+                        <ChevronRight className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Interactive Live Sync Pill Button */}
+                <button
+                  type="button"
+                  onClick={() => handleSyncMailAccount()}
+                  className="flex items-center gap-1.5 rounded-full bg-emerald-50/90 hover:bg-emerald-100/90 border border-emerald-200/80 px-2.5 py-1 text-[10px] font-bold text-emerald-700 shadow-2xs shrink-0 transition-all active:scale-95 cursor-pointer"
+                  title="Click to sync live emails with Gmail"
+                >
+                  <span className={`h-1.5 w-1.5 rounded-full bg-emerald-500 ${isMailLoading ? 'animate-ping' : 'animate-pulse'}`} />
+                  <span>{isMailLoading ? 'Syncing...' : 'Live Sync'}</span>
+                </button>
+              </div>
             </header>
 
-            {/* Quick Filter Chips */}
-            <div className="px-3 py-2 border-b border-slate-100 bg-slate-50/50 flex items-center gap-1.5">
-              {(['all', 'unread', 'starred'] as const).map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  onClick={() => setEmailFilterMode(mode)}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold capitalize transition-all ${
-                    emailFilterMode === mode
-                      ? 'bg-white text-indigo-700 shadow-2xs border border-indigo-200/80 font-bold'
-                      : 'text-slate-500 hover:text-slate-800 hover:bg-white/60'
-                  }`}
-                >
-                  {mode}
-                </button>
-              ))}
+            {/* Action Status Filter Bar (Needs Action vs Done vs All) */}
+            <div className="px-3 py-1.5 border-b border-slate-100 bg-white flex items-center justify-between gap-1 text-xs shrink-0">
+              <div className="flex items-center gap-1">
+                {(['unhandled', 'done', 'all'] as const).map((st) => (
+                  <button
+                    key={st}
+                    type="button"
+                    onClick={() => setMailStatusFilter(st)}
+                    className={`px-2 py-1 rounded-lg text-[11px] font-bold capitalize transition-all ${
+                      mailStatusFilter === st
+                        ? st === 'unhandled'
+                          ? 'bg-amber-50 text-amber-800 border border-amber-200 shadow-2xs font-black'
+                          : st === 'done'
+                          ? 'bg-emerald-50 text-emerald-800 border border-emerald-200 shadow-2xs font-black'
+                          : 'bg-indigo-50 text-indigo-800 border border-indigo-200 shadow-2xs font-black'
+                        : 'text-slate-400 hover:text-slate-700 hover:bg-slate-50 font-medium'
+                    }`}
+                  >
+                    {st === 'unhandled' ? '⚡ Needs Action' : st === 'done' ? '✅ Done' : 'All'}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-1">
+                {(['all', 'unread', 'starred'] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setEmailFilterMode(mode)}
+                    className={`px-1.5 py-0.5 rounded text-[10px] font-semibold capitalize transition-all ${
+                      emailFilterMode === mode
+                        ? 'text-indigo-600 font-bold bg-indigo-50'
+                        : 'text-slate-400 hover:text-slate-600'
+                    }`}
+                  >
+                    {mode}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {/* Reauth / Permission Warning Banner */}
@@ -5827,7 +6430,11 @@ function WorkspaceShellContent() {
                   <div>
                     <p className="text-xs font-bold text-slate-700">No emails in {mailFolder.toLowerCase()}</p>
                     <p className="text-[11px] text-slate-400 mt-1">
-                      {emailFilterMode !== 'all' ? `No ${emailFilterMode} messages found.` : 'Your inbox is completely caught up!'}
+                      {mailStatusFilter === 'unhandled'
+                        ? 'All caught up! No messages need action.'
+                        : mailStatusFilter === 'done'
+                        ? 'No handled emails yet.'
+                        : 'Your inbox is completely caught up!'}
                     </p>
                   </div>
                   {mailAccounts.length === 0 && (
@@ -5885,22 +6492,51 @@ function WorkspaceShellContent() {
                       </p>
 
                       <div className="flex items-center justify-between mt-2 pt-1 border-t border-slate-100/60">
-                        <div className="flex items-center gap-1.5">
-                          {msg.hasAttachments && (
-                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-slate-100 text-[10px] font-semibold text-slate-600">
-                              <Paperclip className="w-2.5 h-2.5" />
-                              <span>File</span>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {msg.isHandled ? (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-[10px] font-bold text-emerald-700">
+                              <CheckCircle2 className="w-2.5 h-2.5" />
+                              <span>Done by {msg.handledByName || 'Team'}</span>
+                            </span>
+                          ) : selectedMailAccount?.isShared ? (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-50 border border-amber-200 text-[10px] font-bold text-amber-700">
+                              <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
+                              <span>Needs Action</span>
+                            </span>
+                          ) : null}
+                          {(msg.hasAttachments || (msg.attachments && msg.attachments.length > 0) || (msg.attachmentsJson && msg.attachmentsJson.length > 0)) && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-indigo-50 border border-indigo-200/60 text-[10px] font-bold text-indigo-700">
+                              <Paperclip className="w-2.5 h-2.5 text-indigo-600" />
+                              <span>
+                                {msg.attachments && msg.attachments.length > 1
+                                  ? `${msg.attachments.length} files`
+                                  : msg.attachmentsJson && msg.attachmentsJson.length > 1
+                                  ? `${msg.attachmentsJson.length} files`
+                                  : 'Attachment'}
+                              </span>
                             </span>
                           )}
                         </div>
-                        <button
-                          type="button"
-                          onClick={(e) => handleToggleStarEmail(msg.id, e)}
-                          className="p-1 text-slate-300 hover:text-amber-500 transition-colors"
-                          title={msg.isStarred ? 'Unstar' : 'Star'}
-                        >
-                          <Star className={`w-3.5 h-3.5 ${msg.isStarred ? 'text-amber-400 fill-amber-400' : ''}`} />
-                        </button>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={(e) => handleToggleHandledEmail(msg.id, msg.isHandled, e)}
+                            className={`p-1 rounded-lg transition-colors cursor-pointer ${
+                              msg.isHandled ? 'text-emerald-600 hover:text-slate-400' : 'text-slate-300 hover:text-emerald-600'
+                            }`}
+                            title={msg.isHandled ? 'Reopen (mark as Needs Action)' : 'Mark Done for all group members'}
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => handleToggleStarEmail(msg.id, e)}
+                            className="p-1 text-slate-300 hover:text-amber-500 transition-colors cursor-pointer"
+                            title={msg.isStarred ? 'Unstar' : 'Star'}
+                          >
+                            <Star className={`w-3.5 h-3.5 ${msg.isStarred ? 'text-amber-400 fill-amber-400' : ''}`} />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   );
@@ -5927,6 +6563,21 @@ function WorkspaceShellContent() {
                   </div>
 
                   <div className="flex items-center gap-1.5 shrink-0">
+                    {/* Synchronized Done / Needs Action Button */}
+                    <button
+                      type="button"
+                      onClick={() => handleToggleHandledEmail(selectedEmail.id, selectedEmail.isHandled)}
+                      className={`px-3 py-1.5 rounded-xl font-bold text-xs flex items-center gap-1.5 transition-all shadow-2xs cursor-pointer ${
+                        selectedEmail.isHandled
+                          ? 'bg-emerald-50 text-emerald-800 border border-emerald-300 hover:bg-emerald-100'
+                          : 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-emerald-600/20'
+                      }`}
+                      title={selectedEmail.isHandled ? 'Click to reopen as Needs Action' : 'Click to mark as Done (updates for all team members)'}
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>{selectedEmail.isHandled ? `Done by ${selectedEmail.handledByName || 'Team'}` : 'Mark as Done'}</span>
+                    </button>
+
                     <button
                       type="button"
                       onClick={(e) => handleToggleStarEmail(selectedEmail.id, e)}
@@ -6007,6 +6658,42 @@ function WorkspaceShellContent() {
 
                 {/* Email Reading Thread View */}
                 <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
+                  {/* Shared Group Mailbox Banner */}
+                  {selectedMailAccount?.isShared && (
+                    <div className="p-3.5 bg-indigo-50/70 border border-indigo-200/80 rounded-2xl flex flex-wrap items-center justify-between gap-3 text-xs text-indigo-900 shadow-2xs">
+                      <div className="flex items-center gap-2">
+                        <Users className="w-4 h-4 text-indigo-600 shrink-0" />
+                        <span className="font-semibold">
+                          Shared Group Mailbox linked to <span className="font-bold underline">#{selectedMailAccount.channelName || 'channel'}</span>
+                        </span>
+                        {selectedMailAccount.isAdminMaster && (
+                          <span className="px-2 py-0.5 rounded-md bg-amber-100 text-amber-800 text-[10px] font-black uppercase">
+                            👑 Workspace Admin Master View
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[11px] font-medium text-indigo-700 flex items-center gap-2">
+                        {selectedEmail.isHandled ? (
+                          <span className="flex items-center gap-1 text-emerald-700 font-bold bg-white px-2 py-0.5 rounded-md border border-emerald-200">
+                            <CheckCircle2 className="w-3.5 h-3.5" /> Done by {selectedEmail.handledByName || 'Team'}
+                          </span>
+                        ) : (
+                          <span className="flex items-center gap-1 text-amber-700 font-bold bg-white px-2 py-0.5 rounded-md border border-amber-200">
+                            <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
+                            Needs Action by any group member
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleToggleHandledEmail(selectedEmail.id, selectedEmail.isHandled)}
+                          className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[10px] transition-all cursor-pointer shadow-2xs"
+                        >
+                          {selectedEmail.isHandled ? 'Reopen' : 'Mark as Done'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Message Thread Card */}
                   <div className="bg-white rounded-3xl border border-slate-200/80 shadow-sm p-6 sm:p-8 space-y-6">
                     {/* Subject & Author Header */}
@@ -6046,36 +6733,179 @@ function WorkspaceShellContent() {
                       subject={selectedEmail.subject}
                     />
 
-                    {/* Attachments Section */}
-                    {selectedEmail.attachments && selectedEmail.attachments.length > 0 && (
-                      <div className="pt-6 border-t border-slate-100">
-                        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">
-                          Attachments ({selectedEmail.attachments.length})
-                        </h4>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                          {selectedEmail.attachments.map((att: any, idx: number) => (
-                            <a
-                              key={idx}
-                              href={att.fileUrl || '#'}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="p-3 rounded-2xl border border-slate-200 bg-slate-50 hover:bg-indigo-50/50 hover:border-indigo-200 transition-all flex items-center justify-between group"
-                            >
-                              <div className="flex items-center gap-2.5 truncate">
-                                <div className="p-2 rounded-xl bg-white border border-slate-200 text-indigo-600 group-hover:scale-105 transition-transform">
-                                  <FileText className="w-4 h-4" />
+                    {/* Attachments Section - 100% Gmail Caliber with Real Image Previews & Document Chips */}
+                    {(() => {
+                      const currentAtts: Array<{ fileName: string; fileUrl: string; fileSize?: number; contentType?: string }> =
+                        (selectedEmail.attachments && selectedEmail.attachments.length > 0
+                          ? selectedEmail.attachments
+                          : selectedEmail.attachmentsJson) || [];
+                      if (currentAtts.length === 0) return null;
+
+                      return (
+                        <div className="pt-6 border-t border-slate-100 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <Paperclip className="w-4 h-4 text-slate-400" />
+                              <h4 className="text-xs font-bold text-slate-700 tracking-wide">
+                                {currentAtts.length} {currentAtts.length === 1 ? 'Attachment' : 'Attachments'}
+                              </h4>
+                            </div>
+                            <span className="text-[11px] font-medium text-slate-400">
+                              Click any file to preview or download
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                            {currentAtts.map((att: any, idx: number) => {
+                              const isImage =
+                                (att.contentType && att.contentType.startsWith('image/')) ||
+                                /\.(png|jpe?g|webp|gif|svg)$/i.test(att.fileName || '');
+                              const isPdf =
+                                (att.contentType && att.contentType.includes('pdf')) ||
+                                /\.pdf$/i.test(att.fileName || '');
+                              const isDoc =
+                                (att.contentType && att.contentType.includes('word')) ||
+                                /\.(docx?|rtf)$/i.test(att.fileName || '');
+                              const isSheet =
+                                (att.contentType && att.contentType.includes('spreadsheet')) ||
+                                /\.(xlsx?|csv)$/i.test(att.fileName || '');
+                              const isZip =
+                                (att.contentType && att.contentType.includes('zip')) ||
+                                /\.(zip|rar|tar|gz)$/i.test(att.fileName || '');
+
+                              let fileDownloadUrl = att.fileUrl || '#';
+                              if (fileDownloadUrl !== '#' && !fileDownloadUrl.startsWith('http')) {
+                                fileDownloadUrl = `${API_URL.replace(/\/api$/, '')}${fileDownloadUrl}`;
+                              }
+                              if (fileDownloadUrl !== '#' && token && !fileDownloadUrl.includes('token=')) {
+                                fileDownloadUrl += `${fileDownloadUrl.includes('?') ? '&' : '?'}token=${token}`;
+                              }
+
+                              return (
+                                <div
+                                  key={idx}
+                                  className="group relative rounded-2xl border border-slate-200/90 bg-slate-50/70 hover:bg-white hover:border-indigo-300 hover:shadow-md transition-all overflow-hidden flex flex-col"
+                                >
+                                  {isImage ? (
+                                    <div
+                                      onClick={() =>
+                                        setPreviewAttachment({
+                                          fileName: att.fileName,
+                                          fileUrl: fileDownloadUrl,
+                                          contentType: att.contentType || 'image/png',
+                                          fileSize: att.fileSize,
+                                        })
+                                      }
+                                      className="relative h-32 w-full bg-slate-100 flex items-center justify-center overflow-hidden cursor-pointer group/img"
+                                    >
+                                      <img
+                                        src={fileDownloadUrl}
+                                        alt={att.fileName}
+                                        className="h-full w-full object-cover transition-transform duration-300 group-hover/img:scale-105"
+                                        onError={(e) => {
+                                          (e.target as HTMLElement).style.display = 'none';
+                                        }}
+                                      />
+                                      <div className="absolute inset-0 bg-slate-900/40 opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                                        <button
+                                          type="button"
+                                          className="p-2 rounded-xl bg-white/90 text-slate-800 hover:bg-white transition-all shadow-sm"
+                                          title="Preview Image"
+                                        >
+                                          <Eye className="w-4 h-4" />
+                                        </button>
+                                        <a
+                                          href={fileDownloadUrl}
+                                          download={att.fileName}
+                                          onClick={(e) => e.stopPropagation()}
+                                          className="p-2 rounded-xl bg-white/90 text-slate-800 hover:bg-white transition-all shadow-sm"
+                                          title="Download Image"
+                                        >
+                                          <Download className="w-4 h-4" />
+                                        </a>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div
+                                      onClick={() => {
+                                        if (isPdf) {
+                                          setPreviewAttachment({
+                                            fileName: att.fileName,
+                                            fileUrl: fileDownloadUrl,
+                                            contentType: 'application/pdf',
+                                            fileSize: att.fileSize,
+                                          });
+                                        } else {
+                                          window.open(fileDownloadUrl, '_blank');
+                                        }
+                                      }}
+                                      className="h-20 bg-gradient-to-tr from-slate-100 to-indigo-50/40 flex items-center justify-center cursor-pointer border-b border-slate-100"
+                                    >
+                                      {isPdf ? (
+                                        <div className="px-3 py-1.5 rounded-xl bg-rose-50 text-rose-600 font-black text-xs border border-rose-200 shadow-2xs flex items-center gap-1.5">
+                                          <FileText className="w-4 h-4" />
+                                          <span>PDF DOCUMENT</span>
+                                        </div>
+                                      ) : isDoc ? (
+                                        <div className="px-3 py-1.5 rounded-xl bg-blue-50 text-blue-600 font-black text-xs border border-blue-200 shadow-2xs flex items-center gap-1.5">
+                                          <FileText className="w-4 h-4" />
+                                          <span>WORD DOCUMENT</span>
+                                        </div>
+                                      ) : isSheet ? (
+                                        <div className="px-3 py-1.5 rounded-xl bg-emerald-50 text-emerald-600 font-black text-xs border border-emerald-200 shadow-2xs flex items-center gap-1.5">
+                                          <BarChart2 className="w-4 h-4" />
+                                          <span>SPREADSHEET</span>
+                                        </div>
+                                      ) : isZip ? (
+                                        <div className="px-3 py-1.5 rounded-xl bg-amber-50 text-amber-700 font-black text-xs border border-amber-200 shadow-2xs flex items-center gap-1.5">
+                                          <Archive className="w-4 h-4" />
+                                          <span>ZIP ARCHIVE</span>
+                                        </div>
+                                      ) : (
+                                        <div className="px-3 py-1.5 rounded-xl bg-slate-200 text-slate-700 font-black text-xs border border-slate-300 shadow-2xs flex items-center gap-1.5">
+                                          <File className="w-4 h-4" />
+                                          <span>FILE</span>
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  <div className="p-3 flex items-center justify-between gap-2 bg-white">
+                                    <div className="truncate min-w-0">
+                                      <p className="text-xs font-bold text-slate-800 truncate" title={att.fileName}>
+                                        {att.fileName}
+                                      </p>
+                                      <span className="text-[10px] text-slate-400 font-medium">
+                                        {att.fileSize ? formatFileSize(att.fileSize) : 'Attached file'}
+                                      </span>
+                                    </div>
+                                    <div className="flex items-center gap-1 shrink-0">
+                                      <a
+                                        href={fileDownloadUrl}
+                                        download={att.fileName}
+                                        className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors cursor-pointer"
+                                        title={`Download ${att.fileName}`}
+                                      >
+                                        <Download className="w-3.5 h-3.5" />
+                                      </a>
+                                      <a
+                                        href={fileDownloadUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+                                        title="Open in new tab"
+                                      >
+                                        <ExternalLink className="w-3.5 h-3.5" />
+                                      </a>
+                                    </div>
+                                  </div>
                                 </div>
-                                <div className="truncate">
-                                  <p className="text-xs font-bold text-slate-800 truncate">{att.fileName}</p>
-                                  <span className="text-[10px] text-slate-400">{formatFileSize(att.fileSize)}</span>
-                                </div>
-                              </div>
-                              <Download className="w-4 h-4 text-slate-400 group-hover:text-indigo-600 shrink-0 ml-2" />
-                            </a>
-                          ))}
+                              );
+                            })}
+                          </div>
                         </div>
-                      </div>
-                    )}
+                      );
+                    })()}
                   </div>
                 </div>
 
@@ -6091,9 +6921,15 @@ function WorkspaceShellContent() {
                         <span className="font-semibold text-slate-700 truncate">
                           Replying to <span className="font-bold text-indigo-600">{selectedEmail.fromName || selectedEmail.fromAddress}</span>
                         </span>
-                        <span className="text-[11px] text-slate-400 truncate hidden md:inline">
-                          ({selectedEmail.fromAddress})
-                        </span>
+                        {selectedMailAccount?.isShared ? (
+                          <span className="text-[11px] text-indigo-700 font-semibold truncate hidden md:inline bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-200/60">
+                            (on behalf of #{selectedMailAccount.channelName || 'group'} • auto-marks Done)
+                          </span>
+                        ) : (
+                          <span className="text-[11px] text-slate-400 truncate hidden md:inline">
+                            ({selectedEmail.fromAddress})
+                          </span>
+                        )}
                       </div>
                       <button
                         type="button"
@@ -6128,27 +6964,50 @@ function WorkspaceShellContent() {
                       className="w-full p-3.5 bg-transparent resize-none border-none focus:outline-none text-xs sm:text-sm text-slate-800 placeholder-slate-400 font-medium leading-relaxed"
                     />
 
+                    {/* Attached files in inline reply */}
+                    {inlineReplyAttachments.length > 0 && (
+                      <div className="px-3.5 py-2 bg-slate-50 border-t border-slate-100 flex flex-wrap gap-2">
+                        {inlineReplyAttachments.map((att, idx) => (
+                          <div
+                            key={idx}
+                            className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-700 shadow-2xs"
+                          >
+                            <Paperclip className="w-3 h-3 text-indigo-600" />
+                            <span className="max-w-[140px] truncate">{att.fileName}</span>
+                            <span className="text-[10px] text-slate-400 font-mono">({formatFileSize(att.fileSize)})</span>
+                            <button
+                              type="button"
+                              onClick={() => setInlineReplyAttachments((prev) => prev.filter((_, i) => i !== idx))}
+                              className="p-0.5 hover:text-rose-600 rounded-md transition-colors ml-0.5 cursor-pointer"
+                              title="Remove"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
                     {/* Composer Bottom Toolbar */}
                     <div className="flex items-center justify-between px-3 py-2 bg-slate-50/50 border-t border-slate-100">
                       <div className="flex items-center gap-1">
+                        <input
+                          type="file"
+                          multiple
+                          id="inline-mail-file-input"
+                          onChange={(e) => handleFileAttach(e, 'inline')}
+                          className="hidden"
+                        />
                         <button
                           type="button"
-                          onClick={() => {
-                            setComposeMailData({
-                              to: selectedEmail.fromAddress,
-                              cc: '',
-                              subject: selectedEmail.subject.startsWith('Re:') ? selectedEmail.subject : `Re: ${selectedEmail.subject}`,
-                              body: inlineReplyText,
-                            });
-                            setShowComposeMailModal(true);
-                          }}
-                          className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors"
-                          title="Attach files or format email"
+                          onClick={() => document.getElementById('inline-mail-file-input')?.click()}
+                          className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors cursor-pointer"
+                          title="Attach files (images, documents, PDFs, etc.)"
                         >
                           <Paperclip className="h-4 w-4" />
                         </button>
                         <span className="text-[10px] text-slate-400 font-medium px-2 hidden sm:inline">
-                          Markdown & quotes supported
+                          Attach files & images • Markdown supported
                         </span>
                       </div>
 
@@ -6158,7 +7017,7 @@ function WorkspaceShellContent() {
                         </span>
                         <button
                           type="button"
-                          disabled={!inlineReplyText.trim() || isSendingMail}
+                          disabled={(!inlineReplyText.trim() && inlineReplyAttachments.length === 0) || isSendingMail}
                           onClick={handleSendInlineReply}
                           className="py-2 px-4 rounded-xl bg-gradient-to-r from-indigo-600 via-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 disabled:opacity-50 text-white font-bold text-xs shadow-md shadow-indigo-600/25 flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer disabled:cursor-not-allowed"
                         >
@@ -7083,6 +7942,54 @@ function WorkspaceShellContent() {
                 </button>
               </>
             )}
+
+            {/* Linked Group Mailbox pill for Active Channel */}
+            {!activeRecipient && !showCalendarView && activeChannel && (() => {
+              const channelMail = mailAccounts.find((a) => a.channelId === activeChannel.id);
+              if (channelMail) {
+                return (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedMailAccountId(channelMail.id);
+                      setActiveAppTab('mail');
+                    }}
+                    className="flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-indigo-50 to-purple-50 hover:from-indigo-100 hover:to-purple-100 border border-indigo-200/90 px-2.5 py-1.5 text-xs font-semibold text-indigo-900 transition-all shadow-2xs shrink-0 group"
+                    title={`Group Mailbox: ${channelMail.emailAddress} - Click to open in Mail Studio`}
+                  >
+                    <Mail className="h-3.5 w-3.5 text-indigo-600 group-hover:scale-110 transition-transform shrink-0" />
+                    <span className="font-bold text-indigo-700 hidden lg:inline max-w-[150px] truncate">
+                      {channelMail.emailAddress}
+                    </span>
+                    <span className="font-bold text-indigo-700 lg:hidden">
+                      Group Mail
+                    </span>
+                    {channelMail.unhandledCount !== undefined && channelMail.unhandledCount > 0 && (
+                      <span className="flex items-center justify-center min-w-[18px] h-[18px] px-1 text-[10px] font-black rounded-full bg-amber-500 text-white shadow-xs animate-pulse">
+                        {channelMail.unhandledCount}
+                      </span>
+                    )}
+                  </button>
+                );
+              } else if (activeChannel.createdById === user?.id || currentUserRole === 'ADMIN' || currentUserRole === 'OWNER') {
+                return (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConnectMailMode('group');
+                      setConnectMailChannelId(activeChannel.id);
+                      setShowConnectMailModal(true);
+                    }}
+                    className="flex items-center gap-1 rounded-xl bg-slate-50 hover:bg-indigo-50 border border-dashed border-slate-300 hover:border-indigo-300 px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:text-indigo-700 transition-all shrink-0"
+                    title="Link a shared group mailbox for this channel"
+                  >
+                    <Mail className="h-3.5 w-3.5 text-indigo-500" />
+                    <span className="hidden xl:inline">+ Link Group Mail</span>
+                  </button>
+                );
+              }
+              return null;
+            })()}
 
             {/* Instant Team Meeting Button */}
             {!activeRecipient && !showCalendarView && activeChannel && (
@@ -9301,6 +10208,62 @@ function WorkspaceShellContent() {
                 </div>
               )}
 
+              {/* Step to Sync Shared Mailbox for this Group / Channel */}
+              <div className="rounded-2xl border border-indigo-100 bg-gradient-to-br from-indigo-50/70 via-purple-50/30 to-white p-3.5 space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="h-8 w-8 rounded-xl bg-indigo-600/10 border border-indigo-200 flex items-center justify-center text-indigo-600 shrink-0">
+                      <Mail className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <span className="text-xs font-bold text-slate-900 block">
+                        Sync Group Mailbox
+                      </span>
+                      <span className="text-[11px] text-slate-500 block">
+                        All group members share this mail ID to read & reply to clients
+                      </span>
+                    </div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={newChannelEnableMail}
+                    onChange={(e) => {
+                      setNewChannelEnableMail(e.target.checked);
+                      if (e.target.checked && !newChannelGroupEmail && newChannelName) {
+                        setNewChannelGroupEmail(`${newChannelName.toLowerCase().replace(/\s+/g, '-')}@company.com`);
+                      }
+                    }}
+                    className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 cursor-pointer"
+                  />
+                </div>
+
+                {newChannelEnableMail && (
+                  <div className="pt-1 space-y-2 animate-in fade-in duration-200">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                        Shared Group Email Address
+                      </label>
+                      <div className="relative flex items-center">
+                        <Mail className="absolute left-3 h-4 w-4 text-indigo-500" />
+                        <input
+                          type="email"
+                          value={newChannelGroupEmail}
+                          onChange={(e) => setNewChannelGroupEmail(e.target.value)}
+                          placeholder="e.g. support@company.com or project@domain.com"
+                          className="w-full rounded-xl border border-indigo-200 bg-white pl-9 pr-3 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:border-indigo-600 focus:outline-none focus:ring-1 focus:ring-indigo-600"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-[10px] text-indigo-700 bg-indigo-50/80 rounded-lg p-2 border border-indigo-100">
+                      <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-indigo-600" />
+                      <span>
+                        Strict group privacy: Only members of this group can access and reply to client emails. Non-members cannot see or send from it.
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
                 <button
                   type="button"
@@ -9560,6 +10523,25 @@ function WorkspaceShellContent() {
                   onChange={(e) => setEditChannelIsPrivate(e.target.checked)}
                   className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-600"
                 />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                  Linked Group Mailbox (Shared with all channel members)
+                </label>
+                <div className="relative mt-1.5 flex items-center">
+                  <Mail className="absolute left-3.5 h-4 w-4 text-indigo-500" />
+                  <input
+                    type="email"
+                    value={editChannelGroupEmail}
+                    onChange={(e) => setEditChannelGroupEmail(e.target.value)}
+                    placeholder="e.g. project-team@company.com"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 pl-10 pr-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-indigo-600 focus:outline-none focus:ring-1 focus:ring-indigo-600"
+                  />
+                </div>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  All members of this group can read, send replies, and get notifications for this mailbox. Non-members cannot access it.
+                </p>
               </div>
 
               <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
@@ -11481,15 +12463,15 @@ function WorkspaceShellContent() {
       {/* ───────────────────────────────────────────────────────────── */}
       {showConnectMailModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
-          <div className="w-full max-w-md rounded-3xl bg-white border border-slate-200 shadow-2xl p-6 text-slate-800 space-y-4">
-            <div className="flex items-center justify-between">
+          <div className="w-full max-w-lg rounded-3xl bg-white border border-slate-200 shadow-2xl p-6 text-slate-800 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-indigo-600 to-violet-600 flex items-center justify-center text-white shadow-md shadow-indigo-200">
                   <Mail className="h-5 w-5" />
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-slate-900">Connect Email Account</h3>
-                  <p className="text-xs text-slate-500">Google Workspace or Gmail</p>
+                  <h3 className="text-base font-bold text-slate-900">Connect Mailbox</h3>
+                  <p className="text-xs text-slate-500">Attach collaborative group inbox or personal email</p>
                 </div>
               </div>
               <button
@@ -11501,12 +12483,81 @@ function WorkspaceShellContent() {
               </button>
             </div>
 
-            <div className="space-y-3 pt-2">
+            {/* Mailbox Scope Selector */}
+            <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-2xl">
+              <button
+                type="button"
+                onClick={() => setConnectMailMode('group')}
+                className={`py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 ${
+                  connectMailMode === 'group'
+                    ? 'bg-white text-indigo-700 shadow-2xs'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <Users className="w-3.5 h-3.5" />
+                <span>Group / Channel Inbox</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setConnectMailMode('personal')}
+                className={`py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 ${
+                  connectMailMode === 'personal'
+                    ? 'bg-white text-indigo-700 shadow-2xs'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <User className="w-3.5 h-3.5" />
+                <span>Personal Inbox</span>
+              </button>
+            </div>
+
+            {connectMailMode === 'group' ? (
+              <div className="space-y-3 bg-indigo-50/60 border border-indigo-100 p-3.5 rounded-2xl">
+                <div>
+                  <label className="block text-[11px] font-bold text-indigo-900 uppercase tracking-wider mb-1.5">
+                    Assign to Channel / Group
+                  </label>
+                  <select
+                    value={connectMailChannelId}
+                    onChange={(e) => setConnectMailChannelId(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-white border border-indigo-200 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  >
+                    <option value="">-- Choose Channel / Group --</option>
+                    {channels.map((ch) => (
+                      <option key={ch.id} value={ch.id}>
+                        #{ch.name} {ch.isPrivate ? '(Private)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="text-[11px] text-indigo-800 space-y-1">
+                  <p className="font-semibold flex items-center gap-1.5">
+                    <span>👑</span>
+                    <span>Admin Master Access: Workspace Admins have full access to all group inboxes.</span>
+                  </p>
+                  <p className="text-[10px] text-indigo-600">
+                    Group members can read, reply on behalf, and mark emails as Done. Non-members cannot access.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="p-3 bg-slate-50 border border-slate-100 rounded-2xl text-[11px] text-slate-600">
+                Personal inboxes are only visible to and managed by you.
+              </div>
+            )}
+
+            <div className="space-y-3 pt-1">
               {/* Google OAuth Button */}
               <button
                 type="button"
-                onClick={() => handleConnectEmail('GOOGLE')}
-                className="w-full py-3 px-4 rounded-2xl border border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700 font-bold text-xs flex items-center justify-center gap-3 transition-all shadow-xs group"
+                onClick={() => {
+                  if (connectMailMode === 'group' && !connectMailChannelId) {
+                    alert('Please select a Channel / Group to link this mailbox to.');
+                    return;
+                  }
+                  handleConnectEmail('GOOGLE');
+                }}
+                className="w-full py-2.5 px-4 rounded-2xl border border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700 font-bold text-xs flex items-center justify-center gap-3 transition-all shadow-xs group cursor-pointer"
               >
                 <svg className="w-4 h-4" viewBox="0 0 24 24">
                   <path
@@ -11528,6 +12579,111 @@ function WorkspaceShellContent() {
                 </svg>
                 <span>Continue with Google</span>
               </button>
+
+              {/* Direct Mailbox Option for Testing / Rapid Deployment */}
+              <div className="pt-2 border-t border-slate-100">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">
+                  Or Connect Direct Team Address
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    type="email"
+                    value={connectEmailInput}
+                    onChange={(e) => setConnectEmailInput(e.target.value)}
+                    placeholder={connectMailMode === 'group' ? 'support@company.com' : 'you@company.com'}
+                    className="flex-1 px-3 py-2 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (connectMailMode === 'group' && !connectMailChannelId) {
+                        alert('Please select a Channel / Group to link this mailbox to.');
+                        return;
+                      }
+                      if (!connectEmailInput.trim() || !connectEmailInput.includes('@')) {
+                        alert('Please enter a valid email address.');
+                        return;
+                      }
+                      handleConnectEmail('CUSTOM', connectEmailInput.trim());
+                    }}
+                    className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-xs transition-all"
+                  >
+                    Connect
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ───────────────────────────────────────────────────────────── */}
+      {/* ATTACHMENT LIGHTBOX PREVIEW MODAL (Gmail-Caliber Full View) */}
+      {/* ───────────────────────────────────────────────────────────── */}
+      {previewAttachment && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md animate-in fade-in"
+          onClick={() => setPreviewAttachment(null)}
+        >
+          <div
+            className="max-w-4xl max-h-[90vh] w-full bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl overflow-hidden flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between p-4 border-b border-slate-800 bg-slate-900/90 text-white">
+              <div className="flex items-center gap-2.5 truncate">
+                <FileText className="w-5 h-5 text-indigo-400 shrink-0" />
+                <span className="font-bold text-sm truncate">{previewAttachment.fileName}</span>
+                {previewAttachment.fileSize ? (
+                  <span className="text-xs text-slate-400 font-mono">({formatFileSize(previewAttachment.fileSize)})</span>
+                ) : null}
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <a
+                  href={previewAttachment.fileUrl}
+                  download={previewAttachment.fileName}
+                  className="p-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white transition-colors flex items-center gap-1.5 text-xs font-bold"
+                  title="Download File"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Download</span>
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setPreviewAttachment(null)}
+                  className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-auto p-4 flex items-center justify-center bg-slate-950/60 min-h-[300px]">
+              {previewAttachment.contentType.startsWith('image/') ||
+              /\.(png|jpe?g|webp|gif|svg)$/i.test(previewAttachment.fileName) ? (
+                <img
+                  src={previewAttachment.fileUrl}
+                  alt={previewAttachment.fileName}
+                  className="max-h-[75vh] max-w-full object-contain rounded-xl shadow-2xl"
+                />
+              ) : previewAttachment.contentType.includes('pdf') || /\.pdf$/i.test(previewAttachment.fileName) ? (
+                <iframe
+                  src={previewAttachment.fileUrl}
+                  title={previewAttachment.fileName}
+                  className="w-full h-[75vh] rounded-xl border-none bg-white"
+                />
+              ) : (
+                <div className="text-center p-8 text-slate-400 space-y-3">
+                  <FileText className="w-16 h-16 mx-auto text-slate-600" />
+                  <p className="text-sm font-semibold text-slate-300">File ready for download</p>
+                  <a
+                    href={previewAttachment.fileUrl}
+                    download={previewAttachment.fileName}
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs transition-colors"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Download {previewAttachment.fileName}</span>
+                  </a>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -11604,21 +12760,70 @@ function WorkspaceShellContent() {
                   className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all font-medium resize-none"
                 />
               </div>
+
+              {/* Compose Attachments List */}
+              {composeAttachments.length > 0 && (
+                <div className="p-3 bg-slate-50 border border-slate-200/80 rounded-2xl space-y-2">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                    Attached Files ({composeAttachments.length})
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {composeAttachments.map((att, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-700 shadow-2xs"
+                      >
+                        <Paperclip className="w-3 h-3 text-indigo-600" />
+                        <span className="max-w-[150px] truncate">{att.fileName}</span>
+                        <span className="text-[10px] text-slate-400 font-mono">({formatFileSize(att.fileSize)})</span>
+                        <button
+                          type="button"
+                          onClick={() => setComposeAttachments((prev) => prev.filter((_, i) => i !== idx))}
+                          className="p-0.5 hover:text-rose-600 rounded-md transition-colors ml-0.5 cursor-pointer"
+                          title="Remove attachment"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="flex items-center justify-between pt-2 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => setShowComposeMailModal(false)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-500 hover:bg-slate-100 transition-colors"
-              >
-                Discard
-              </button>
+              <div className="flex items-center gap-2">
+                <input
+                  type="file"
+                  multiple
+                  id="compose-modal-file-input"
+                  onChange={(e) => handleFileAttach(e, 'compose')}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => document.getElementById('compose-modal-file-input')?.click()}
+                  className="px-3 py-1.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700 flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <Paperclip className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>Attach Files</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowComposeMailModal(false);
+                    setComposeAttachments([]);
+                  }}
+                  className="px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-500 hover:bg-slate-100 transition-colors"
+                >
+                  Discard
+                </button>
+              </div>
               <button
                 type="button"
                 onClick={handleSendEmail}
                 disabled={isSendingMail || !composeMailData.to.trim()}
-                className="py-2.5 px-5 rounded-2xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white font-bold text-xs shadow-md shadow-indigo-200 flex items-center gap-2 transition-all"
+                className="py-2.5 px-5 rounded-2xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white font-bold text-xs shadow-md shadow-indigo-200 flex items-center gap-2 transition-all cursor-pointer"
               >
                 {isSendingMail ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
                 <span>Send Email</span>

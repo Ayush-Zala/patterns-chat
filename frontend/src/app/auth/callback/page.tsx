@@ -30,6 +30,9 @@ function CallbackContent() {
         localStorage.removeItem('teamflow_oauth_mode');
       }
       const existingToken = typeof window !== 'undefined' ? localStorage.getItem('teamflow_token') : null;
+      const mailWorkspaceId = typeof window !== 'undefined' ? localStorage.getItem('teamflow_mail_workspace_id') : null;
+      const mailChannelId = typeof window !== 'undefined' ? localStorage.getItem('teamflow_mail_channel_id') : null;
+      const mailIsShared = typeof window !== 'undefined' ? localStorage.getItem('teamflow_mail_is_shared') === 'true' : false;
 
       async function connectMailAccountOnly() {
         try {
@@ -42,6 +45,9 @@ function CallbackContent() {
             body: JSON.stringify({
               code,
               redirectUri: `${window.location.origin}/auth/callback?provider=${provider}`,
+              workspaceId: mailWorkspaceId || undefined,
+              channelId: mailChannelId || undefined,
+              isShared: mailIsShared || undefined,
             }),
           });
 
@@ -50,6 +56,11 @@ function CallbackContent() {
           if (res.ok) {
             // Note: DO NOT touch teamflow_token or teamflow_user!
             // The active user stays logged in as themselves.
+            if (typeof window !== 'undefined') {
+              localStorage.removeItem('teamflow_mail_workspace_id');
+              localStorage.removeItem('teamflow_mail_channel_id');
+              localStorage.removeItem('teamflow_mail_is_shared');
+            }
             const returnUrl = localStorage.getItem('teamflow_oauth_return_tab');
             if (returnUrl) {
               localStorage.removeItem('teamflow_oauth_return_tab');
