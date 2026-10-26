@@ -68,6 +68,16 @@ export class MailController {
       emailAddress: string;
       provider?: EmailProvider;
       displayName?: string;
+      imapHost?: string;
+      imapPort?: number;
+      imapUser?: string;
+      imapPassword?: string;
+      imapTls?: boolean;
+      smtpHost?: string;
+      smtpPort?: number;
+      smtpUser?: string;
+      smtpPassword?: string;
+      smtpTls?: boolean;
       channelId?: string;
       workspaceId?: string;
       isShared?: boolean;
@@ -196,9 +206,10 @@ export class MailController {
       replyToMessageId?: string;
       attachments?: Array<{
         fileName: string;
-        contentType: string;
-        base64Data: string;
+        fileUrl?: string;
         fileSize?: number;
+        contentType?: string;
+        base64Data?: string;
       }>;
     },
   ) {
