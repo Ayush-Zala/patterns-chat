@@ -106,6 +106,7 @@ import { useAuth } from '@/lib/auth-context';
 import { Workspace, WorkspaceMember, WorkspaceRole, Meeting } from '@/types/auth';
 import { CalendarView } from '@/components/meetings/CalendarView';
 import { GroupMeetingOverlay } from '@/components/meetings/GroupMeetingOverlay';
+import { EmailBodyViewer } from '@/components/EmailBodyViewer';
 import {
   ROLE_CONFIGS,
   ROLE_WEIGHTS,
@@ -912,7 +913,27 @@ function WorkspaceShellContent() {
   }
 
   async function handleSelectEmail(msg: EmailMessageItem) {
-    setSelectedEmail(msg);
+    const wasUnread = !msg.isRead;
+    setSelectedEmail({ ...msg, isRead: true });
+
+    // Instantly mark as read in local state without delay
+    if (wasUnread) {
+      setMailMessages((prev) =>
+        prev.map((m) => (m.id === msg.id ? { ...m, isRead: true } : m)),
+      );
+      setMailAccounts((prev) =>
+        prev.map((a) =>
+          a.id === msg.accountId
+            ? {
+                ...a,
+                unreadCount: Math.max(0, (a.unreadCount || 1) - 1),
+                inboxUnreadCount: Math.max(0, ((a.inboxUnreadCount ?? a.unreadCount) || 1) - 1),
+              }
+            : a,
+        ),
+      );
+    }
+
     try {
       const res = await fetch(`${API_URL}/mail/messages/${msg.id}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -920,16 +941,6 @@ function WorkspaceShellContent() {
       if (res.ok) {
         const fullMsg = await res.json();
         setSelectedEmail(fullMsg);
-        setMailMessages((prev) =>
-          prev.map((m) => (m.id === msg.id ? { ...m, isRead: true } : m)),
-        );
-        setMailAccounts((prev) =>
-          prev.map((a) =>
-            a.id === msg.accountId
-              ? { ...a, unreadCount: Math.max(0, a.unreadCount - 1) }
-              : a,
-          ),
-        );
       }
     } catch (e) {
       console.error('Failed to fetch email details:', e);
@@ -957,36 +968,70 @@ function WorkspaceShellContent() {
   }
 
   async function handleToggleReadEmail(messageId: string) {
+    const currentMsg = mailMessages.find((m) => m.id === messageId) || selectedEmail;
+    const newRead = currentMsg ? !currentMsg.isRead : false;
+
+    // Optimistically update read status and account unread counts immediately
+    setMailMessages((prev) =>
+      prev.map((m) => (m.id === messageId ? { ...m, isRead: newRead } : m)),
+    );
+    if (selectedEmail?.id === messageId) {
+      setSelectedEmail((prev) => (prev ? { ...prev, isRead: newRead } : null));
+    }
+    const targetAccId = currentMsg?.accountId || selectedMailAccountId;
+    if (targetAccId) {
+      setMailAccounts((prev) =>
+        prev.map((a) => {
+          if (a.id === targetAccId) {
+            const delta = newRead ? -1 : 1;
+            const updatedCount = Math.max(0, (a.unreadCount || 0) + delta);
+            return { ...a, unreadCount: updatedCount, inboxUnreadCount: updatedCount };
+          }
+          return a;
+        }),
+      );
+    }
+
     try {
-      const res = await fetch(`${API_URL}/mail/messages/${messageId}/read`, {
+      await fetch(`${API_URL}/mail/messages/${messageId}/read`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ isRead: false }),
+        body: JSON.stringify({ isRead: newRead }),
       });
-      if (res.ok) {
-        setMailMessages((prev) =>
-          prev.map((m) => (m.id === messageId ? { ...m, isRead: false } : m)),
-        );
-      }
     } catch (e) {
-      console.error('Failed to mark email unread:', e);
+      console.error('Failed to toggle read email:', e);
     }
   }
 
   async function handleDeleteEmail(messageId: string) {
+    const targetMsg = mailMessages.find((m) => m.id === messageId) || selectedEmail;
+    if (targetMsg && !targetMsg.isRead && targetMsg.accountId) {
+      setMailAccounts((prev) =>
+        prev.map((a) =>
+          a.id === targetMsg.accountId
+            ? {
+                ...a,
+                unreadCount: Math.max(0, (a.unreadCount || 1) - 1),
+                inboxUnreadCount: Math.max(0, ((a.inboxUnreadCount ?? a.unreadCount) || 1) - 1),
+              }
+            : a,
+        ),
+      );
+    }
+    setMailMessages((prev) => prev.filter((m) => m.id !== messageId));
+    if (selectedEmail?.id === messageId) {
+      setSelectedEmail(null);
+    }
+
     try {
       const res = await fetch(`${API_URL}/mail/messages/${messageId}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
-        setMailMessages((prev) => prev.filter((m) => m.id !== messageId));
-        if (selectedEmail?.id === messageId) {
-          setSelectedEmail(null);
-        }
         setCallNotificationMsg('Email moved to Trash');
         setTimeout(() => setCallNotificationMsg(null), 3000);
       }
@@ -5698,9 +5743,15 @@ function WorkspaceShellContent() {
                     <span className="font-black text-slate-900 text-sm tracking-tight capitalize leading-tight">
                       {mailFolder.toLowerCase()}
                     </span>
-                    <span className="text-[10px] font-bold px-1.5 py-0.2 rounded-md bg-slate-100 text-slate-600">
-                      {filteredMailMessages.length}
-                    </span>
+                    {mailFolder === 'INBOX' && selectedMailAccount?.unreadCount !== undefined && selectedMailAccount.unreadCount > 0 ? (
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-100">
+                        {selectedMailAccount.unreadCount} unread
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-600">
+                        {filteredMailMessages.length}
+                      </span>
+                    )}
                   </div>
                   <span className="text-[10px] text-slate-400 font-medium truncate">
                     {selectedMailAccount?.emailAddress || 'Connected Mailbox'}
@@ -5985,16 +6036,15 @@ function WorkspaceShellContent() {
                       </div>
                     </div>
 
-                    {/* Email HTML or Text Body */}
-                    <div className="text-sm text-slate-800 leading-relaxed font-sans prose prose-slate max-w-none">
-                      {selectedEmail.bodyHtml ? (
-                        <div dangerouslySetInnerHTML={{ __html: selectedEmail.bodyHtml }} />
-                      ) : (
-                        <pre className="whitespace-pre-wrap font-sans text-sm text-slate-800 leading-relaxed">
-                          {selectedEmail.bodyText || selectedEmail.snippet}
-                        </pre>
-                      )}
-                    </div>
+                    {/* Email HTML or Text Body (Isolated & Contrast-Safe) */}
+                    <EmailBodyViewer
+                      key={selectedEmail.id}
+                      emailId={selectedEmail.id}
+                      bodyHtml={selectedEmail.bodyHtml}
+                      bodyText={selectedEmail.bodyText}
+                      snippet={selectedEmail.snippet}
+                      subject={selectedEmail.subject}
+                    />
 
                     {/* Attachments Section */}
                     {selectedEmail.attachments && selectedEmail.attachments.length > 0 && (

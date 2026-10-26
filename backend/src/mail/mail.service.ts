@@ -77,6 +77,7 @@ export class MailService {
     const clientId = process.env.GOOGLE_CLIENT_ID || 'dummy_google_client_id.apps.googleusercontent.com';
     const redirect = redirectUri || `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback?provider=google`;
     const scopes = [
+      'https://www.googleapis.com/auth/gmail.modify',
       'https://www.googleapis.com/auth/gmail.readonly',
       'https://www.googleapis.com/auth/gmail.send',
       'https://www.googleapis.com/auth/userinfo.profile',
@@ -534,7 +535,7 @@ export class MailService {
       where: { id: messageId },
       include: {
         account: {
-          select: { id: true, emailAddress: true, displayName: true, userId: true },
+          select: { id: true, emailAddress: true, displayName: true, userId: true, provider: true },
         },
       },
     });
@@ -550,6 +551,9 @@ export class MailService {
         data: { isRead: true },
       });
       message.isRead = true;
+      if (message.account?.provider === EmailProvider.GOOGLE && message.externalMessageId) {
+        this.syncLabelToGmail(message.account, message.externalMessageId, [], ['UNREAD']).catch(() => {});
+      }
     }
 
     return message;
@@ -567,10 +571,19 @@ export class MailService {
     }
 
     const newRead = isRead !== undefined ? isRead : !message.isRead;
-    return this.prisma.emailMessage.update({
+    const updated = await this.prisma.emailMessage.update({
       where: { id: messageId },
       data: { isRead: newRead },
     });
+    if (message.account?.provider === EmailProvider.GOOGLE && message.externalMessageId) {
+      this.syncLabelToGmail(
+        message.account,
+        message.externalMessageId,
+        newRead ? [] : ['UNREAD'],
+        newRead ? ['UNREAD'] : []
+      ).catch(() => {});
+    }
+    return updated;
   }
 
   // Toggle star
@@ -584,10 +597,20 @@ export class MailService {
       throw new NotFoundException('Message not found');
     }
 
-    return this.prisma.emailMessage.update({
+    const newStarred = !message.isStarred;
+    const updated = await this.prisma.emailMessage.update({
       where: { id: messageId },
-      data: { isStarred: !message.isStarred },
+      data: { isStarred: newStarred },
     });
+    if (message.account?.provider === EmailProvider.GOOGLE && message.externalMessageId) {
+      this.syncLabelToGmail(
+        message.account,
+        message.externalMessageId,
+        newStarred ? ['STARRED'] : [],
+        newStarred ? [] : ['STARRED']
+      ).catch(() => {});
+    }
+    return updated;
   }
 
   // Send new email
@@ -810,6 +833,9 @@ export class MailService {
         where: { id: messageId },
         data: { folder: EmailFolder.TRASH },
       });
+      if (message.account?.provider === EmailProvider.GOOGLE && message.externalMessageId) {
+        this.trashGmailMessage(message.account, message.externalMessageId).catch(() => {});
+      }
       return { success: true, movedToTrash: true };
     }
   }
@@ -844,6 +870,40 @@ export class MailService {
     });
 
     return message;
+  }
+
+
+  // Helper to sync label modifications (read/unread/star) to Gmail API
+  private async syncLabelToGmail(account: any, externalMessageId: string, addLabels: string[], removeLabels: string[]) {
+    try {
+      const token = await this.getValidGoogleAccessToken(account);
+      if (!token) return;
+      await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${externalMessageId}/modify`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          addLabelIds: addLabels,
+          removeLabelIds: removeLabels,
+        }),
+      });
+    } catch (err) {
+      // Modify will succeed when token has gmail.modify scope
+    }
+  }
+
+  // Helper to move message to trash on Gmail API
+  private async trashGmailMessage(account: any, externalMessageId: string) {
+    try {
+      const token = await this.getValidGoogleAccessToken(account);
+      if (!token) return;
+      await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${externalMessageId}/trash`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch (err) {}
   }
 
   // Helper to ensure valid Google access token by refreshing if needed
@@ -1059,6 +1119,10 @@ export class MailService {
               });
 
               if (existing) {
+                // CRITICAL: Preserve local read & starred status so background sync never reverts read emails!
+                const finalIsRead = existing.isRead ? true : isRead;
+                const finalIsStarred = existing.isStarred ? true : isStarred;
+
                 await this.prisma.emailMessage.update({
                   where: { id: existing.id },
                   data: {
@@ -1069,10 +1133,10 @@ export class MailService {
                     toAddresses,
                     ccAddresses,
                     snippet,
-                    bodyHtml: html || (text ? `<pre style="white-space: pre-wrap; font-family: inherit;">${text}</pre>` : ''),
-                    bodyText: text || snippet,
-                    isRead,
-                    isStarred,
+                    bodyHtml: html || existing.bodyHtml || (text ? `<pre style="white-space: pre-wrap; font-family: inherit;">${text}</pre>` : ''),
+                    bodyText: text || existing.bodyText || snippet,
+                    isRead: finalIsRead,
+                    isStarred: finalIsStarred,
                     receivedAt,
                   },
                 });
