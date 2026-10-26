@@ -57,6 +57,8 @@ model User {
   hostedMeetings         Meeting[]         @relation("MeetingHost")
   meetingParticipations  MeetingParticipant[] @relation("MeetingParticipantUser")
   emailAccounts          EmailAccount[]
+  handledEmailMessages   EmailMessage[]       @relation("HandledEmailMessages")
+  sentEmailMessages      EmailMessage[]       @relation("SentEmailMessages")
 
   @@map("users")
 }
@@ -77,6 +79,7 @@ model Workspace {
   notifications Notification[]
   callRecordings CallRecording[]
   meetings      Meeting[]
+  emailAccounts EmailAccount[]
 
   @@map("workspaces")
 }
@@ -111,6 +114,7 @@ model Channel {
   members     ChannelMember[]
   callRecordings CallRecording[]
   meetings    Meeting[]
+  emailAccounts EmailAccount[]
 
   @@unique([workspaceId, name])
   @@map("channels")
@@ -340,6 +344,11 @@ model EmailAccount {
   id             String        @id @default(uuid())
   userId         String
   user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspaceId    String?
+  workspace      Workspace?    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  channelId      String?
+  channel        Channel?      @relation(fields: [channelId], references: [id], onDelete: SetNull)
+  isShared       Boolean       @default(false)
   provider       EmailProvider @default(GOOGLE)
   emailAddress   String
   displayName    String?
@@ -368,6 +377,8 @@ model EmailAccount {
   messages       EmailMessage[]
 
   @@unique([userId, emailAddress])
+  @@index([channelId])
+  @@index([workspaceId])
   @@map("email_accounts")
 }
 
@@ -388,6 +399,14 @@ model EmailMessage {
   bodyText          String?
   isRead            Boolean      @default(false)
   isStarred         Boolean      @default(false)
+  isHandled         Boolean      @default(false)
+  handledById       String?
+  handledBy         User?        @relation("HandledEmailMessages", fields: [handledById], references: [id], onDelete: SetNull)
+  handledByName     String?
+  handledAt         DateTime?
+  sentById          String?
+  sentBy            User?        @relation("SentEmailMessages", fields: [sentById], references: [id], onDelete: SetNull)
+  sentByName        String?
   hasAttachments    Boolean      @default(false)
   attachmentsJson   Json?
   receivedAt        DateTime     @default(now())
@@ -396,6 +415,7 @@ model EmailMessage {
 
   @@index([accountId, folder, receivedAt])
   @@index([accountId, isRead])
+  @@index([accountId, isHandled])
   @@map("email_messages")
 }
 

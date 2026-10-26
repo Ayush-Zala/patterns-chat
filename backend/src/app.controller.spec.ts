@@ -14,9 +14,9 @@ describe('AppController', () => {
     appController = app.get<AppController>(AppController);
   });
 
-  describe('root', () => {
+  describe('health', () => {
     it('should return health status', () => {
-      expect(appController.getHealth()).toBeDefined();
+      expect(appController.getHealth()).toHaveProperty('status', 'ok');
     });
   });
 });
