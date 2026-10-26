@@ -11,6 +11,63 @@ interface EmailBodyViewerProps {
   subject?: string;
 }
 
+// Split fresh message content from historical quoted replies
+function splitQuotedEmail(raw: string): { fresh: string; quote: string | null } {
+  if (!raw) return { fresh: '', quote: null };
+
+  const quoteMarkers = [
+    /\r?\n(?=(?:[-_\s]*On\s+[\s\S]+?wrote:\s*))/i,
+    /\r?\n(?=-----Original Message-----)/i,
+    /\r?\n(?=---------- Forwarded message ---------)/i,
+    /\r?\n(?=________________________________)/i,
+    /\r?\n(?=From:\s+[\s\S]+?\nSent:\s+[\s\S]+?\nTo:)/i,
+  ];
+
+  for (const marker of quoteMarkers) {
+    const match = raw.match(marker);
+    if (match && match.index !== undefined && match.index > 0) {
+      return {
+        fresh: raw.slice(0, match.index).trim(),
+        quote: raw.slice(match.index).trim(),
+      };
+    }
+  }
+
+  const lines = raw.split(/\r?\n/);
+  const firstQuoteLine = lines.findIndex((l) => l.trim().startsWith('>'));
+  if (firstQuoteLine > 0) {
+    return {
+      fresh: lines.slice(0, firstQuoteLine).join('\n').trim(),
+      quote: lines.slice(firstQuoteLine).join('\n').trim(),
+    };
+  }
+
+  return { fresh: raw.trim(), quote: null };
+}
+
+// Convert plain text URLs to clickable links
+function renderLinkifiedText(text: string) {
+  const urlRegex = /(https?:\/\/[^\s<]+[^<.,:;"')\]\s])/g;
+  const parts = text.split(urlRegex);
+
+  return parts.map((part, i) => {
+    if (part.match(urlRegex)) {
+      return (
+        <a
+          key={i}
+          href={part}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-indigo-600 hover:text-indigo-800 underline decoration-indigo-300 hover:decoration-indigo-600 transition-colors break-all"
+        >
+          {part}
+        </a>
+      );
+    }
+    return <React.Fragment key={i}>{part}</React.Fragment>;
+  });
+}
+
 export const EmailBodyViewer: React.FC<EmailBodyViewerProps> = ({
   bodyHtml,
   bodyText,
@@ -18,6 +75,7 @@ export const EmailBodyViewer: React.FC<EmailBodyViewerProps> = ({
   subject,
 }) => {
   const [iframeHeight, setIframeHeight] = useState<number>(400);
+  const [showTrimmed, setShowTrimmed] = useState<boolean>(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   // Prepare sanitized & styled HTML for iframe (Pure, Clean Light Theme like Gmail)
@@ -26,12 +84,11 @@ export const EmailBodyViewer: React.FC<EmailBodyViewerProps> = ({
 
     let html = bodyHtml;
 
-    // 1. Remove preheader spacer blocks that inject hundreds of hidden non-breaking spaces
+    // 1. Remove preheader spacer blocks that inject hidden non-breaking spaces
     html = html.replace(/<div[^>]*class=["'][^"']*preheader[^"']*["'][^>]*>[\s\S]*?<\/div>/gi, '');
     html = html.replace(/<span[^>]*class=["'][^"']*preheader[^"']*["'][^>]*>[\s\S]*?<\/span>/gi, '');
 
-    // 2. Neutralize @media (prefers-color-scheme: dark) so emails with dark-mode media queries
-    // don't force white text onto the clean white reading canvas!
+    // 2. Neutralize @media (prefers-color-scheme: dark) so emails stay light & legible
     html = html.replace(/\(prefers-color-scheme\s*:\s*dark\)/gi, '(prefers-color-scheme: x-dark)');
     html = html.replace(/\[data-ogsc\]/gi, '[data-x-ogsc]');
     html = html.replace(/\[data-ogsb\]/gi, '[data-x-ogsb]');
@@ -55,9 +112,10 @@ export const EmailBodyViewer: React.FC<EmailBodyViewerProps> = ({
           color: #1e293b;
           font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
           word-break: break-word;
-          line-height: 1.5;
+          line-height: 1.6;
+          font-size: 14px;
         }
-        a { color: #4f46e5; }
+        a { color: #4f46e5; text-decoration: underline; }
         img {
           max-width: 100% !important;
           height: auto !important;
@@ -65,10 +123,17 @@ export const EmailBodyViewer: React.FC<EmailBodyViewerProps> = ({
         table {
           max-width: 100% !important;
         }
+        blockquote, .gmail_quote, .quoted-text {
+          border-left: 2px solid #cbd5e1 !important;
+          margin: 12px 0 !important;
+          padding-left: 14px !important;
+          color: #64748b !important;
+          background: rgba(248, 250, 252, 0.6) !important;
+          border-radius: 0 8px 8px 0 !important;
+        }
       </style>
     `;
 
-    // Inject baseHeadContent right after <head> if present
     if (/<head[^>]*>/i.test(html)) {
       html = html.replace(/<head[^>]*>/i, (match) => `${match}\n${baseHeadContent}`);
     } else if (/<html[^>]*>/i.test(html)) {
@@ -159,6 +224,10 @@ export const EmailBodyViewer: React.FC<EmailBodyViewerProps> = ({
     return txt.trim();
   }, [rawText]);
 
+  const { fresh, quote } = useMemo(() => {
+    return splitQuotedEmail(cleanedText);
+  }, [cleanedText]);
+
   // Check if content is still being fetched from the server
   const isLoading = !bodyHtml && !bodyText;
 
@@ -171,7 +240,7 @@ export const EmailBodyViewer: React.FC<EmailBodyViewerProps> = ({
     );
   }
 
-  // Pure, clean, Gmail-style rendering without any toolbar or toggle buttons
+  // Pure, clean, Gmail-style HTML rendering
   if (bodyHtml && bodyHtml.trim().length > 0) {
     return (
       <div className="w-full bg-white overflow-hidden">
@@ -193,12 +262,30 @@ export const EmailBodyViewer: React.FC<EmailBodyViewerProps> = ({
     );
   }
 
-  // Clean fallback for plain-text only emails
+  // Clean, Gmail-caliber typography rendering with quote trimming toggle
   return (
-    <div className="w-full bg-white rounded-2xl p-4 text-slate-800">
-      <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed select-text break-words">
-        {cleanedText}
-      </pre>
+    <div className="w-full bg-white text-slate-800 space-y-3">
+      <div className="whitespace-pre-wrap font-sans text-[14px] leading-relaxed select-text break-words text-slate-800">
+        {renderLinkifiedText(fresh || cleanedText)}
+      </div>
+
+      {quote && (
+        <div className="pt-2">
+          <button
+            type="button"
+            onClick={() => setShowTrimmed((prev) => !prev)}
+            className="inline-flex items-center justify-center px-2.5 py-0.5 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-800 text-[11px] font-bold tracking-widest transition-all cursor-pointer select-none border border-slate-200/80 shadow-2xs"
+            title={showTrimmed ? 'Hide trimmed content' : 'Show trimmed content'}
+          >
+            •••
+          </button>
+          {showTrimmed && (
+            <div className="mt-3 pl-3.5 border-l-2 border-slate-300 text-slate-600 text-[13px] leading-relaxed bg-slate-50/70 p-3 rounded-r-xl whitespace-pre-wrap font-sans">
+              {renderLinkifiedText(quote)}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };

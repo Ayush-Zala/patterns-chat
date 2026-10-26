@@ -1971,7 +1971,28 @@ export class MailService {
       this.accountReauthNeeded.delete(account.id);
 
       const listData = await listRes.json();
-      const messageRefs: Array<{ id: string; threadId: string }> = listData.messages || [];
+      let messageRefs: Array<{ id: string; threadId: string }> = listData.messages || [];
+
+      // Also ensure latest sent messages are fetched from Gmail
+      try {
+        const sentRes = await fetch(
+          'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=in:sent&maxResults=25',
+          { headers: { Authorization: `Bearer ${accessToken}` } },
+        );
+        if (sentRes.ok) {
+          const sentData = await sentRes.json();
+          const sentRefs: Array<{ id: string; threadId: string }> = sentData.messages || [];
+          const existingIds = new Set(messageRefs.map((m) => m.id));
+          for (const sRef of sentRefs) {
+            if (!existingIds.has(sRef.id)) {
+              messageRefs.push(sRef);
+              existingIds.add(sRef.id);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to fetch Gmail sent messages query:', err);
+      }
 
       if (messageRefs.length === 0) {
         return { syncedCount: 0 };
@@ -2448,6 +2469,102 @@ export class MailService {
         }
       } finally {
         lock.release();
+      }
+
+      // Also sync Sent mailbox if available on the IMAP server
+      try {
+        const mailboxes = await client.list();
+        const sentBox = mailboxes.find(
+          (mb) =>
+            mb.specialUse === '\\Sent' ||
+            /^(sent|sent items|sent messages|inbox\.sent)$/i.test(mb.path.trim()) ||
+            /\bsent\b/i.test(mb.name),
+        );
+        if (sentBox) {
+          const sentLock = await client.getMailboxLock(sentBox.path);
+          try {
+            const fetchedSent: any[] = [];
+            for await (const msg of client.fetch('1:*', {
+              envelope: true,
+              source: true,
+              flags: true,
+              uid: true,
+            })) {
+              fetchedSent.push(msg);
+            }
+            const recentSent = fetchedSent.slice(-15).reverse();
+            for (const msg of recentSent) {
+              const extId = `imap_${account.id}_sent_${msg.uid}`;
+              const existing = await this.prisma.emailMessage.findFirst({
+                where: { accountId: account.id, externalMessageId: extId },
+              });
+              if (!existing && msg.source) {
+                const parsed = await simpleParser(msg.source);
+                const fromAddr = parsed.from?.value?.[0]?.address || account.emailAddress;
+                const fromName = parsed.from?.value?.[0]?.name || fromAddr.split('@')[0];
+                const toAddrs = (parsed.to ? (Array.isArray(parsed.to) ? parsed.to : [parsed.to]) : [])
+                  .flatMap((t: any) => t.value?.map((v: any) => v.address) || [])
+                  .filter(Boolean);
+                const ccAddrs = (parsed.cc ? (Array.isArray(parsed.cc) ? parsed.cc : [parsed.cc]) : [])
+                  .flatMap((c: any) => c.value?.map((v: any) => v.address) || [])
+                  .filter(Boolean);
+
+                const attachmentsList: Array<{ fileName: string; fileUrl: string; fileSize: number; contentType: string }> = [];
+                if (parsed.attachments && parsed.attachments.length > 0) {
+                  const uploadsDir = join(process.cwd(), 'uploads');
+                  if (!existsSync(uploadsDir)) {
+                    mkdirSync(uploadsDir, { recursive: true });
+                  }
+                  for (const att of parsed.attachments) {
+                    try {
+                      const safeExt = extname(att.filename || '') || '.bin';
+                      const uniqueFilename = `mail_${Date.now()}_${Math.round(Math.random() * 1e9)}${safeExt}`;
+                      const filePath = join(uploadsDir, uniqueFilename);
+                      if (att.content) {
+                        await fsPromises.writeFile(filePath, att.content);
+                        attachmentsList.push({
+                          fileName: att.filename || 'attachment',
+                          fileUrl: `/uploads/${uniqueFilename}`,
+                          fileSize: att.size || att.content.length || 0,
+                          contentType: att.contentType || 'application/octet-stream',
+                        });
+                      }
+                    } catch (attErr) {
+                      console.warn('Failed to save sent email attachment:', attErr);
+                    }
+                  }
+                }
+
+                await this.prisma.emailMessage.create({
+                  data: {
+                    accountId: account.id,
+                    externalMessageId: extId,
+                    folder: EmailFolder.SENT,
+                    fromName,
+                    fromAddress: fromAddr,
+                    toAddresses: toAddrs.length > 0 ? toAddrs : ['Recipient'],
+                    ccAddresses: ccAddrs,
+                    subject: parsed.subject || '(no subject)',
+                    snippet: (parsed.text || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+                    bodyHtml: parsed.html || `<p>${(parsed.text || '').replace(/\n/g, '<br/>')}</p>`,
+                    bodyText: parsed.text || '',
+                    isRead: true,
+                    isStarred: msg.flags?.has('\\Flagged') || false,
+                    isHandled: true,
+                    hasAttachments: attachmentsList.length > 0,
+                    attachmentsJson: attachmentsList.length > 0 ? (attachmentsList as any) : undefined,
+                    receivedAt: parsed.date || new Date(),
+                  },
+                });
+                syncedCount++;
+              }
+            }
+          } finally {
+            sentLock.release();
+          }
+        }
+      } catch (sentSyncErr) {
+        console.warn('Failed to sync IMAP Sent mailbox:', sentSyncErr);
       }
 
       await client.logout();
