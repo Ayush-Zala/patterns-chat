@@ -149,6 +149,7 @@ export interface EmailAccountItem {
   channelName?: string | null;
   workspaceId?: string | null;
   isAdminMaster?: boolean;
+  canManageGroupSync?: boolean;
   ownerId?: string;
   ownerName?: string;
   isOwner?: boolean;
@@ -441,6 +442,23 @@ function WorkspaceShellContent() {
   const [threadLoading, setThreadLoading] = useState(false);
   const [threadInputText, setThreadInputText] = useState('');
   const [isSendingThreadReply, setIsSendingThreadReply] = useState(false);
+
+  // Role & Permissions
+  const isWorkspaceOwner =
+    currentWs?.owner?.id === user?.id ||
+    currentWs?.ownerId === user?.id ||
+    members.some((m) => m.user?.id === user?.id && m.role === 'OWNER');
+
+  const myWorkspaceMember = members.find((m) => m.user?.id === user?.id);
+  const currentUserRole: WorkspaceRole =
+    isWorkspaceOwner
+      ? 'OWNER'
+      : (myWorkspaceMember?.role || (currentWs?.userRole as WorkspaceRole) || 'MEMBER');
+
+  const canManageGroupMail =
+    isWorkspaceOwner ||
+    currentUserRole === 'OWNER' ||
+    currentUserRole === 'ADMIN';
 
   // UI state
   const [copiedCode, setCopiedCode] = useState(false);
@@ -1160,6 +1178,17 @@ function WorkspaceShellContent() {
   async function handleSyncMailAccount(accId?: string, silent = false) {
     const targetId = accId || selectedMailAccountId;
     if (!targetId || !token) return;
+
+    const targetAccount = mailAccounts.find((a) => a.id === targetId);
+    // If it's a shared group mailbox, enforce Admin/Owner permissions
+    if (targetAccount?.isShared && !canManageGroupMail) {
+      if (!silent) {
+        setCallNotificationMsg('Group mail sync is restricted to Workspace Admins & Owners.');
+        setTimeout(() => setCallNotificationMsg(null), 3500);
+      }
+      return;
+    }
+
     try {
       if (!silent) {
         setIsMailLoading(true);
@@ -1192,17 +1221,25 @@ function WorkspaceShellContent() {
     }
   }
 
-  // Periodic auto-sync for active mailbox every 30 seconds
+  // Periodic auto-sync for active mailbox every 30 seconds (Personal mailboxes, or Group mailboxes if Admin/Owner)
   useEffect(() => {
     if (!token || !selectedMailAccountId) return;
+    const currentAcc = mailAccounts.find((a) => a.id === selectedMailAccountId);
+    if (currentAcc?.isShared && !canManageGroupMail) return;
+
     const syncTimer = setInterval(() => {
       handleSyncMailAccount(selectedMailAccountId, true);
     }, 30000);
     return () => clearInterval(syncTimer);
-  }, [token, selectedMailAccountId, mailFolder, mailSearchQuery]);
+  }, [token, selectedMailAccountId, mailFolder, mailSearchQuery, canManageGroupMail, mailAccounts]);
 
   async function handleDisconnectAccount(accId: string) {
     if (!token || !accId) return;
+    const targetAcc = mailAccounts.find((a) => a.id === accId);
+    if (targetAcc?.isShared && !canManageGroupMail) {
+      alert('Only Workspace Admins and Owners can disconnect a group mailbox.');
+      return;
+    }
     if (!confirm('Are you sure you want to disconnect this email account?')) return;
     try {
       setIsMailLoading(true);
@@ -1228,6 +1265,11 @@ function WorkspaceShellContent() {
   }
 
   async function handleConnectEmail(provider: 'GOOGLE' | 'MICROSOFT' | 'CUSTOM', customEmail?: string) {
+    if (connectMailMode === 'group' && !canManageGroupMail) {
+      alert('Only Workspace Admins and Owners (SuperAdmins) can connect a group/shared mailbox.');
+      return;
+    }
+
     if (connectMailMode === 'group') {
       if (typeof window !== 'undefined') {
         localStorage.setItem('teamflow_mail_workspace_id', (workspaceId || '') as string);
@@ -4917,8 +4959,8 @@ function WorkspaceShellContent() {
         setActiveChannelMembers(data.members);
       }
 
-      // Automatically link and sync shared mailbox for this channel
-      if (newChannelEnableMail && newChannelGroupEmail.trim()) {
+      // Automatically link and sync shared mailbox for this channel (Admins & Owners only)
+      if (canManageGroupMail && newChannelEnableMail && newChannelGroupEmail.trim()) {
         try {
           await fetch(`${API_URL}/mail/accounts/connect`, {
             method: 'POST',
@@ -5050,17 +5092,6 @@ function WorkspaceShellContent() {
     setTimeout(() => setCopiedInviteLink(false), 2500);
   }
 
-  const isWorkspaceOwner =
-    currentWs?.owner?.id === user?.id ||
-    currentWs?.ownerId === user?.id ||
-    members.some((m) => m.user?.id === user?.id && m.role === 'OWNER');
-
-  const myWorkspaceMember = members.find((m) => m.user?.id === user?.id);
-  const currentUserRole: WorkspaceRole =
-    isWorkspaceOwner
-      ? 'OWNER'
-      : (myWorkspaceMember?.role || (currentWs?.userRole as WorkspaceRole) || 'MEMBER');
-
   function openEditChannelModal(ch: Channel) {
     setChannelToEdit(ch);
     setEditChannelName(ch.name);
@@ -5100,8 +5131,8 @@ function WorkspaceShellContent() {
           setActiveChannel((prev) => (prev ? { ...prev, ...data } : null));
         }
 
-        // Link or update group mailbox if changed
-        if (editChannelGroupEmail.trim()) {
+        // Link or update group mailbox if changed (Admins & Owners only)
+        if (canManageGroupMail && editChannelGroupEmail.trim()) {
           const linked = mailAccounts.find((a) => a.channelId === target.id);
           if (!linked || linked.emailAddress.toLowerCase() !== editChannelGroupEmail.trim().toLowerCase()) {
             try {
@@ -6031,35 +6062,48 @@ function WorkspaceShellContent() {
                       Group Inboxes ({mailAccounts.filter((a) => a.isShared).length})
                     </span>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setConnectMailMode('group');
-                      setShowConnectMailModal(true);
-                    }}
-                    className="p-1 hover:bg-indigo-50 hover:text-indigo-600 rounded-lg text-slate-400 transition-colors"
-                    title="Attach email inbox to a Channel/Group"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                  </button>
+                  {canManageGroupMail && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setConnectMailMode('group');
+                        setShowConnectMailModal(true);
+                      }}
+                      className="p-1 hover:bg-indigo-50 hover:text-indigo-600 rounded-lg text-slate-400 transition-colors cursor-pointer"
+                      title="Attach email inbox to a Channel/Group (Admins & Owners)"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
 
                 <div className="space-y-1 mt-1">
                   {mailAccounts.filter((a) => a.isShared).length === 0 ? (
                     <div className="p-2.5 text-center bg-indigo-50/40 rounded-xl border border-dashed border-indigo-200/60 my-1">
                       <p className="text-[11px] font-bold text-slate-700">No group mailboxes</p>
-                      <p className="text-[10px] text-slate-400 mt-0.5">Link a team email to any channel</p>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setConnectMailMode('group');
-                          setShowConnectMailModal(true);
-                        }}
-                        className="mt-1.5 w-full py-1 px-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-[10px] font-bold shadow-xs transition-all flex items-center justify-center gap-1"
-                      >
-                        <Plus className="h-3 w-3" />
-                        <span>Add Group Mail</span>
-                      </button>
+                      <p className="text-[10px] text-slate-400 mt-0.5">
+                        {canManageGroupMail
+                          ? 'Link a team email to any channel'
+                          : 'Configured by Workspace Admins & Owners'}
+                      </p>
+                      {canManageGroupMail ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setConnectMailMode('group');
+                            setShowConnectMailModal(true);
+                          }}
+                          className="mt-1.5 w-full py-1 px-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-[10px] font-bold shadow-xs transition-all flex items-center justify-center gap-1 cursor-pointer"
+                        >
+                          <Plus className="h-3 w-3" />
+                          <span>Add Group Mail</span>
+                        </button>
+                      ) : (
+                        <div className="mt-1.5 flex items-center justify-center gap-1 text-[10px] text-slate-400 font-medium">
+                          <Lock className="w-3 h-3 text-slate-400" />
+                          <span>Admin & Owner access only</span>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     mailAccounts
@@ -6340,15 +6384,25 @@ function WorkspaceShellContent() {
                 )}
 
                 {/* Interactive Live Sync Pill Button */}
-                <button
-                  type="button"
-                  onClick={() => handleSyncMailAccount()}
-                  className="flex items-center gap-1.5 rounded-full bg-emerald-50/90 hover:bg-emerald-100/90 border border-emerald-200/80 px-2.5 py-1 text-[10px] font-bold text-emerald-700 shadow-2xs shrink-0 transition-all active:scale-95 cursor-pointer"
-                  title="Click to sync live emails with Gmail"
-                >
-                  <span className={`h-1.5 w-1.5 rounded-full bg-emerald-500 ${isMailLoading ? 'animate-ping' : 'animate-pulse'}`} />
-                  <span>{isMailLoading ? 'Syncing...' : 'Live Sync'}</span>
-                </button>
+                {selectedMailAccount?.isShared && !canManageGroupMail ? (
+                  <div
+                    className="flex items-center gap-1.5 rounded-full bg-slate-100 border border-slate-200/90 px-2.5 py-1 text-[10px] font-semibold text-slate-500 shadow-2xs shrink-0 cursor-default select-none"
+                    title="Group mailbox sync is managed by Workspace Admins & Owners"
+                  >
+                    <Lock className="h-3 w-3 text-slate-400" />
+                    <span>Synced by Admins</span>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => handleSyncMailAccount()}
+                    className="flex items-center gap-1.5 rounded-full bg-emerald-50/90 hover:bg-emerald-100/90 border border-emerald-200/80 px-2.5 py-1 text-[10px] font-bold text-emerald-700 shadow-2xs shrink-0 transition-all active:scale-95 cursor-pointer"
+                    title="Click to sync live emails with Gmail"
+                  >
+                    <span className={`h-1.5 w-1.5 rounded-full bg-emerald-500 ${isMailLoading ? 'animate-ping' : 'animate-pulse'}`} />
+                    <span>{isMailLoading ? 'Syncing...' : 'Live Sync'}</span>
+                  </button>
+                )}
               </div>
             </header>
 
@@ -7971,7 +8025,7 @@ function WorkspaceShellContent() {
                     )}
                   </button>
                 );
-              } else if (activeChannel.createdById === user?.id || currentUserRole === 'ADMIN' || currentUserRole === 'OWNER') {
+              } else if (canManageGroupMail) {
                 return (
                   <button
                     type="button"
@@ -7980,8 +8034,8 @@ function WorkspaceShellContent() {
                       setConnectMailChannelId(activeChannel.id);
                       setShowConnectMailModal(true);
                     }}
-                    className="flex items-center gap-1 rounded-xl bg-slate-50 hover:bg-indigo-50 border border-dashed border-slate-300 hover:border-indigo-300 px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:text-indigo-700 transition-all shrink-0"
-                    title="Link a shared group mailbox for this channel"
+                    className="flex items-center gap-1 rounded-xl bg-slate-50 hover:bg-indigo-50 border border-dashed border-slate-300 hover:border-indigo-300 px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:text-indigo-700 transition-all shrink-0 cursor-pointer"
+                    title="Link a shared group mailbox for this channel (Admins & Owners)"
                   >
                     <Mail className="h-3.5 w-3.5 text-indigo-500" />
                     <span className="hidden xl:inline">+ Link Group Mail</span>
@@ -10209,60 +10263,69 @@ function WorkspaceShellContent() {
               )}
 
               {/* Step to Sync Shared Mailbox for this Group / Channel */}
-              <div className="rounded-2xl border border-indigo-100 bg-gradient-to-br from-indigo-50/70 via-purple-50/30 to-white p-3.5 space-y-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-center gap-2.5">
-                    <div className="h-8 w-8 rounded-xl bg-indigo-600/10 border border-indigo-200 flex items-center justify-center text-indigo-600 shrink-0">
-                      <Mail className="h-4 w-4" />
-                    </div>
-                    <div>
-                      <span className="text-xs font-bold text-slate-900 block">
-                        Sync Group Mailbox
-                      </span>
-                      <span className="text-[11px] text-slate-500 block">
-                        All group members share this mail ID to read & reply to clients
-                      </span>
-                    </div>
-                  </div>
-                  <input
-                    type="checkbox"
-                    checked={newChannelEnableMail}
-                    onChange={(e) => {
-                      setNewChannelEnableMail(e.target.checked);
-                      if (e.target.checked && !newChannelGroupEmail && newChannelName) {
-                        setNewChannelGroupEmail(`${newChannelName.toLowerCase().replace(/\s+/g, '-')}@company.com`);
-                      }
-                    }}
-                    className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 cursor-pointer"
-                  />
-                </div>
-
-                {newChannelEnableMail && (
-                  <div className="pt-1 space-y-2 animate-in fade-in duration-200">
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
-                        Shared Group Email Address
-                      </label>
-                      <div className="relative flex items-center">
-                        <Mail className="absolute left-3 h-4 w-4 text-indigo-500" />
-                        <input
-                          type="email"
-                          value={newChannelGroupEmail}
-                          onChange={(e) => setNewChannelGroupEmail(e.target.value)}
-                          placeholder="e.g. support@company.com or project@domain.com"
-                          className="w-full rounded-xl border border-indigo-200 bg-white pl-9 pr-3 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:border-indigo-600 focus:outline-none focus:ring-1 focus:ring-indigo-600"
-                        />
+              {canManageGroupMail ? (
+                <div className="rounded-2xl border border-indigo-100 bg-gradient-to-br from-indigo-50/70 via-purple-50/30 to-white p-3.5 space-y-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-center gap-2.5">
+                      <div className="h-8 w-8 rounded-xl bg-indigo-600/10 border border-indigo-200 flex items-center justify-center text-indigo-600 shrink-0">
+                        <Mail className="h-4 w-4" />
+                      </div>
+                      <div>
+                        <span className="text-xs font-bold text-slate-900 block">
+                          Sync Group Mailbox
+                        </span>
+                        <span className="text-[11px] text-slate-500 block">
+                          All group members share this mail ID to read & reply to clients
+                        </span>
                       </div>
                     </div>
-                    <div className="flex items-center gap-1.5 text-[10px] text-indigo-700 bg-indigo-50/80 rounded-lg p-2 border border-indigo-100">
-                      <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-indigo-600" />
-                      <span>
-                        Strict group privacy: Only members of this group can access and reply to client emails. Non-members cannot see or send from it.
-                      </span>
-                    </div>
+                    <input
+                      type="checkbox"
+                      checked={newChannelEnableMail}
+                      onChange={(e) => {
+                        setNewChannelEnableMail(e.target.checked);
+                        if (e.target.checked && !newChannelGroupEmail && newChannelName) {
+                          setNewChannelGroupEmail(`${newChannelName.toLowerCase().replace(/\s+/g, '-')}@company.com`);
+                        }
+                      }}
+                      className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 cursor-pointer"
+                    />
                   </div>
-                )}
-              </div>
+
+                  {newChannelEnableMail && (
+                    <div className="pt-1 space-y-2 animate-in fade-in duration-200">
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                          Shared Group Email Address
+                        </label>
+                        <div className="relative flex items-center">
+                          <Mail className="absolute left-3 h-4 w-4 text-indigo-500" />
+                          <input
+                            type="email"
+                            value={newChannelGroupEmail}
+                            onChange={(e) => setNewChannelGroupEmail(e.target.value)}
+                            placeholder="e.g. support@company.com or project@domain.com"
+                            className="w-full rounded-xl border border-indigo-200 bg-white pl-9 pr-3 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:border-indigo-600 focus:outline-none focus:ring-1 focus:ring-indigo-600"
+                          />
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5 text-[10px] text-indigo-700 bg-indigo-50/80 rounded-lg p-2 border border-indigo-100">
+                        <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-indigo-600" />
+                        <span>
+                          Strict group privacy: Only members of this group can access and reply to client emails. Non-members cannot see or send from it.
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-slate-200/80 bg-slate-50 p-3 flex items-center justify-between text-xs text-slate-500">
+                  <div className="flex items-center gap-2">
+                    <Lock className="w-4 h-4 text-slate-400 shrink-0" />
+                    <span>Group Mailbox Sync is reserved for Workspace Admins & Owners.</span>
+                  </div>
+                </div>
+              )}
 
               <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
                 <button
@@ -10530,18 +10593,30 @@ function WorkspaceShellContent() {
                   Linked Group Mailbox (Shared with all channel members)
                 </label>
                 <div className="relative mt-1.5 flex items-center">
-                  <Mail className="absolute left-3.5 h-4 w-4 text-indigo-500" />
+                  <Mail className={`absolute left-3.5 h-4 w-4 ${canManageGroupMail ? 'text-indigo-500' : 'text-slate-400'}`} />
                   <input
                     type="email"
+                    disabled={!canManageGroupMail}
                     value={editChannelGroupEmail}
                     onChange={(e) => setEditChannelGroupEmail(e.target.value)}
-                    placeholder="e.g. project-team@company.com"
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 pl-10 pr-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-indigo-600 focus:outline-none focus:ring-1 focus:ring-indigo-600"
+                    placeholder={canManageGroupMail ? 'e.g. project-team@company.com' : 'No group mailbox linked'}
+                    className={`w-full rounded-xl border pl-10 pr-3 py-2.5 text-sm ${
+                      canManageGroupMail
+                        ? 'border-slate-200 bg-slate-50 text-slate-900 placeholder:text-slate-400 focus:border-indigo-600 focus:outline-none focus:ring-1 focus:ring-indigo-600'
+                        : 'border-slate-200 bg-slate-100 text-slate-500 cursor-not-allowed'
+                    }`}
                   />
                 </div>
-                <p className="mt-1 text-[11px] text-slate-500">
-                  All members of this group can read, send replies, and get notifications for this mailbox. Non-members cannot access it.
-                </p>
+                {canManageGroupMail ? (
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    All members of this group can read, send replies, and get notifications for this mailbox. Non-members cannot access it.
+                  </p>
+                ) : (
+                  <p className="mt-1 text-[11px] text-amber-700 flex items-center gap-1 font-medium">
+                    <Lock className="w-3 h-3 text-amber-600 shrink-0" />
+                    <span>Only Workspace Admins and Owners can link or modify group mailboxes.</span>
+                  </p>
+                )}
               </div>
 
               <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
@@ -12485,23 +12560,33 @@ function WorkspaceShellContent() {
 
             {/* Mailbox Scope Selector */}
             <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-2xl">
-              <button
-                type="button"
-                onClick={() => setConnectMailMode('group')}
-                className={`py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 ${
-                  connectMailMode === 'group'
-                    ? 'bg-white text-indigo-700 shadow-2xs'
-                    : 'text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                <Users className="w-3.5 h-3.5" />
-                <span>Group / Channel Inbox</span>
-              </button>
+              {canManageGroupMail ? (
+                <button
+                  type="button"
+                  onClick={() => setConnectMailMode('group')}
+                  className={`py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                    connectMailMode === 'group'
+                      ? 'bg-white text-indigo-700 shadow-2xs'
+                      : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <Users className="w-3.5 h-3.5" />
+                  <span>Group / Channel Inbox</span>
+                </button>
+              ) : (
+                <div
+                  className="py-2 px-3 rounded-xl text-xs font-bold text-slate-400 opacity-60 flex items-center justify-center gap-1.5 cursor-not-allowed select-none bg-slate-50/60"
+                  title="Only Workspace Admins and Owners can configure Group Inboxes"
+                >
+                  <Lock className="w-3.5 h-3.5" />
+                  <span>Group Inbox (Admin Only)</span>
+                </div>
+              )}
               <button
                 type="button"
                 onClick={() => setConnectMailMode('personal')}
-                className={`py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 ${
-                  connectMailMode === 'personal'
+                className={`py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                  connectMailMode === 'personal' || !canManageGroupMail
                     ? 'bg-white text-indigo-700 shadow-2xs'
                     : 'text-slate-500 hover:text-slate-800'
                 }`}
@@ -12511,7 +12596,7 @@ function WorkspaceShellContent() {
               </button>
             </div>
 
-            {connectMailMode === 'group' ? (
+            {connectMailMode === 'group' && canManageGroupMail ? (
               <div className="space-y-3 bg-indigo-50/60 border border-indigo-100 p-3.5 rounded-2xl">
                 <div>
                   <label className="block text-[11px] font-bold text-indigo-900 uppercase tracking-wider mb-1.5">

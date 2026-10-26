@@ -21,6 +21,37 @@ export class MailService {
     private readonly messagesGateway?: MessagesGateway,
   ) {}
 
+  // Helper: Verify if user is an ADMIN, OWNER, or Workspace Creator
+  async verifyAdminOrOwnerRole(
+    userId: string,
+    workspaceId?: string,
+    channelId?: string,
+  ): Promise<boolean> {
+    let targetWsId = workspaceId;
+    if (!targetWsId && channelId) {
+      const ch = await this.prisma.channel.findUnique({
+        where: { id: channelId },
+        select: { workspaceId: true },
+      });
+      if (ch) targetWsId = ch.workspaceId;
+    }
+
+    if (!targetWsId) return false;
+
+    const wsMember = await this.prisma.workspaceMember.findUnique({
+      where: { workspaceId_userId: { workspaceId: targetWsId, userId } },
+      include: { workspace: true },
+    });
+
+    if (!wsMember) return false;
+
+    return (
+      wsMember.role === 'ADMIN' ||
+      wsMember.role === 'OWNER' ||
+      wsMember.workspace?.ownerId === userId
+    );
+  }
+
   // Helper: validate whether current user has access to account (Direct Owner, Workspace Admin, or Channel Member)
   async validateAccountAccess(
     userId: string,
@@ -51,19 +82,15 @@ export class MailService {
     // If shared group mailbox:
     if (account.isShared) {
       // 1. Workspace Admin / Owner has full master access to all group inboxes
-      if (account.channel?.workspace) {
-        const wsMember = account.channel.workspace.members?.find((m: any) => m.userId === userId);
-        const isAdmin =
-          wsMember &&
-          (wsMember.role === 'ADMIN' ||
-            wsMember.role === 'OWNER' ||
-            account.channel.workspace.ownerId === userId);
+      const targetWsId = account.workspaceId || account.channel?.workspaceId;
+      if (targetWsId) {
+        const isAdmin = await this.verifyAdminOrOwnerRole(userId, targetWsId);
         if (isAdmin) {
           return { account, isAdmin: true };
         }
       }
 
-      // 2. Channel member has access to their group inbox
+      // 2. Channel member has access to read and participate in their group inbox
       if (account.channel?.members) {
         const isChannelMember = account.channel.members.some((m: any) => m.userId === userId);
         if (isChannelMember) {
@@ -219,6 +246,7 @@ export class MailService {
         channelName: acc.channel?.name || null,
         channelCreatedById: acc.channel?.createdById || null,
         isChannelAdmin,
+        canManageGroupSync: isAdmin,
         workspaceId: acc.workspaceId,
         isAdminMaster: isAdmin && acc.isShared && acc.userId !== userId,
         ownerId: acc.userId,
@@ -318,6 +346,16 @@ export class MailService {
       emailAddress = emailAddressInput || 'user@patterns.com';
     }
 
+    // Enforce role check: Only Admins/Owners (SuperAdmins) can connect a group/shared mailbox
+    if (isShared || channelId) {
+      const hasPermission = await this.verifyAdminOrOwnerRole(userId, workspaceId, channelId);
+      if (!hasPermission) {
+        throw new ForbiddenException(
+          'Group mail sync can only be connected by Workspace Admins and Owners (SuperAdmins).'
+        );
+      }
+    }
+
     // ONLY upsert EmailAccount linked to the active logged-in user - NO User signup/creation
     const account = await this.upsertAccountAndSeed(userId, {
       emailAddress,
@@ -407,6 +445,16 @@ export class MailService {
       emailAddress = emailAddressInput || 'team@outlook.com';
     }
 
+    // Enforce role check: Only Admins/Owners (SuperAdmins) can connect a group/shared mailbox
+    if (isShared || channelId) {
+      const hasPermission = await this.verifyAdminOrOwnerRole(userId, workspaceId, channelId);
+      if (!hasPermission) {
+        throw new ForbiddenException(
+          'Group mail sync can only be connected by Workspace Admins and Owners (SuperAdmins).'
+        );
+      }
+    }
+
     const account = await this.upsertAccountAndSeed(userId, {
       emailAddress,
       provider: EmailProvider.MICROSOFT,
@@ -461,6 +509,16 @@ export class MailService {
       }
     }
 
+    // Enforce role check: Only Admins/Owners (SuperAdmins) can connect a group/shared mailbox
+    if (isShared || channelId) {
+      const hasPermission = await this.verifyAdminOrOwnerRole(userId, workspaceId, channelId);
+      if (!hasPermission) {
+        throw new ForbiddenException(
+          'Group mail sync can only be connected by Workspace Admins and Owners (SuperAdmins).'
+        );
+      }
+    }
+
     return this.upsertAccountAndSeed(userId, {
       emailAddress: data.emailAddress.trim().toLowerCase(),
       provider: data.provider || EmailProvider.CUSTOM,
@@ -486,6 +544,19 @@ export class MailService {
       isShared?: boolean;
     },
   ) {
+    // If setting group mailbox / shared status, verify admin or owner role
+    if (accountData.isShared || accountData.channelId) {
+      const hasPermission = await this.verifyAdminOrOwnerRole(
+        userId,
+        accountData.workspaceId,
+        accountData.channelId,
+      );
+      if (!hasPermission) {
+        throw new ForbiddenException(
+          'Group mail sync can only be configured by Workspace Admins and Owners (SuperAdmins).'
+        );
+      }
+    }
     let account = await this.prisma.emailAccount.findUnique({
       where: {
         userId_emailAddress: {
@@ -669,12 +740,15 @@ export class MailService {
     }
   }
 
-  // Disconnect an account
+  // Disconnect an account (personal by owner, group mailbox by Admins/Owners)
   async disconnectAccount(userId: string, accountId: string) {
-    const account = await this.prisma.emailAccount.findFirst({
-      where: { id: accountId, userId },
-    });
-    if (!account) throw new NotFoundException('Email account not found');
+    const { account, isAdmin } = await this.validateAccountAccess(userId, accountId);
+    if (account.isShared && !isAdmin) {
+      throw new ForbiddenException('Only Workspace Admins and Owners can disconnect a group mailbox.');
+    }
+    if (!account.isShared && account.userId !== userId) {
+      throw new ForbiddenException('You can only disconnect your own email account.');
+    }
 
     await this.prisma.emailAccount.delete({
       where: { id: accountId },
@@ -2044,9 +2118,26 @@ export class MailService {
     }
   }
 
-  // Sync / refresh emails for an account (supported for account owners and permitted group members)
+  // Sync / refresh emails for an account (Personal sync by owner, Group mail sync restricted to Admins & Owners)
   async syncAccount(userId: string, accountId: string) {
-    const { account } = await this.validateAccountAccess(userId, accountId);
+    const { account, isAdmin } = await this.validateAccountAccess(userId, accountId);
+
+    // If shared group mailbox: strictly enforce that only Admins and Owners can trigger sync
+    if (account.isShared) {
+      let canSyncGroupMail = isAdmin;
+      if (!canSyncGroupMail && (account.workspaceId || account.channelId)) {
+        canSyncGroupMail = await this.verifyAdminOrOwnerRole(
+          userId,
+          account.workspaceId,
+          account.channelId,
+        );
+      }
+      if (!canSyncGroupMail) {
+        throw new ForbiddenException(
+          'Group mail sync can only be triggered by Workspace Admins and Owners (SuperAdmins).'
+        );
+      }
+    }
 
     if (account.provider === EmailProvider.GOOGLE && account.accessToken) {
       const syncResult = await this.syncGmailAccount(account);
