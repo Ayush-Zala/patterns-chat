@@ -248,7 +248,7 @@ export class AuthService {
   // OAUTH 2.0 (GOOGLE & MICROSOFT AUTHENTICATION)
   // ─────────────────────────────────────────────────────────────
 
-  getGoogleAuthUrl(redirectUri?: string) {
+  getGoogleAuthUrl(redirectUri?: string, domainHint?: string) {
     const clientId = process.env.GOOGLE_CLIENT_ID;
     if (!clientId) {
       throw new BadRequestException('GOOGLE_CLIENT_ID not configured in backend');
@@ -264,7 +264,7 @@ export class AuthService {
       clientId,
     )}&redirect_uri=${encodeURIComponent(redirect)}&response_type=code&scope=${encodeURIComponent(
       scopes,
-    )}&access_type=offline&prompt=consent`;
+    )}&access_type=offline&prompt=select_account${domainHint ? `&hd=${encodeURIComponent(domainHint)}` : ''}`;
 
     return { url: authUrl };
   }
@@ -312,6 +312,11 @@ export class AuthService {
     const avatarUrl = profile.picture || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(name)}`;
     const sessionId = crypto.randomUUID();
 
+    // Check if this is a Google Workspace Business/Corporate account
+    // Google returns 'hd' (Hosted Domain) exclusively for Google Workspace corporate accounts
+    const isCorporate = Boolean(profile.hd) || (!email.endsWith('@gmail.com') && !email.endsWith('@googlemail.com'));
+    const companyDomain = profile.hd || (isCorporate ? email.split('@')[1] : null);
+
     // Check if user already exists
     let user = await this.prisma.user.findUnique({
       where: { email },
@@ -328,6 +333,8 @@ export class AuthService {
           avatarUrl,
           status: 'Active',
           currentSessionId: sessionId,
+          isCorporate,
+          companyDomain,
         },
       });
     } else {
@@ -337,6 +344,8 @@ export class AuthService {
         data: {
           currentSessionId: sessionId,
           avatarUrl: user.avatarUrl || avatarUrl,
+          isCorporate: user.isCorporate || isCorporate,
+          companyDomain: user.companyDomain || companyDomain,
         },
       });
     }
@@ -428,6 +437,8 @@ export class AuthService {
       name: user.name,
       avatarUrl: user.avatarUrl,
       status: user.status,
+      isCorporate: (user as any).isCorporate || false,
+      companyDomain: (user as any).companyDomain || null,
       createdAt: user.createdAt,
     };
 

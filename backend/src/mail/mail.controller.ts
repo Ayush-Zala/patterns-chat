@@ -64,6 +64,16 @@ export class MailController {
       emailAddress: string;
       provider?: EmailProvider;
       displayName?: string;
+      imapHost?: string;
+      imapPort?: number;
+      imapUser?: string;
+      imapPassword?: string;
+      imapTls?: boolean;
+      smtpHost?: string;
+      smtpPort?: number;
+      smtpUser?: string;
+      smtpPassword?: string;
+      smtpTls?: boolean;
     },
   ) {
     return this.mailService.connectAccount(user.id, body);
@@ -155,6 +165,12 @@ export class MailController {
       subject: string;
       bodyHtml: string;
       bodyText?: string;
+      attachments?: Array<{
+        fileName: string;
+        fileUrl: string;
+        fileSize: number;
+        contentType: string;
+      }>;
     },
   ) {
     return this.mailService.sendMessage(user.id, body);

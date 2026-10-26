@@ -4,6 +4,7 @@ import {
   Get,
   Patch,
   Body,
+  Query,
   UseGuards,
   HttpCode,
   HttpStatus,
@@ -54,8 +55,8 @@ export class AuthController {
 
   // Google OAuth Endpoints
   @Get('oauth/google/url')
-  getGoogleAuthUrl() {
-    return this.authService.getGoogleAuthUrl();
+  getGoogleAuthUrl(@Query('domainHint') domainHint?: string) {
+    return this.authService.getGoogleAuthUrl(undefined, domainHint);
   }
 
   @HttpCode(HttpStatus.OK)

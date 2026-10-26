@@ -34,6 +34,8 @@ model User {
   status       String?           @default("Active")
   presence     PresenceStatus    @default(ONLINE)
   currentSessionId String?
+  isCorporate    Boolean           @default(false)
+  companyDomain  String?
   createdAt    DateTime          @default(now())
   updatedAt    DateTime          @updatedAt
 
@@ -347,6 +349,19 @@ model EmailAccount {
   tokenExpiresAt DateTime?
   isActive       Boolean       @default(true)
   lastSyncedAt   DateTime?
+
+  // Custom Corporate IMAP / SMTP Credentials
+  imapHost       String?
+  imapPort       Int?          @default(993)
+  imapUser       String?
+  imapPassword   String?
+  imapTls        Boolean       @default(true)
+  smtpHost       String?
+  smtpPort       Int?          @default(465)
+  smtpUser       String?
+  smtpPassword   String?
+  smtpTls        Boolean       @default(true)
+
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 

@@ -51,6 +51,8 @@ const PRESET_GOOGLE_ACCOUNTS: PresetGoogleAccount[] = [
   },
 ];
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
+
 export default function LoginPage() {
   const router = useRouter();
   const { user, login, loginWithGoogle, loading } = useAuth();
@@ -99,6 +101,27 @@ export default function LoginPage() {
       setError(err instanceof Error ? err.message : 'Invalid email or password');
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  async function handleStartGoogleOAuth() {
+    setError(null);
+    setDeviceKickoutNotice(null);
+    setIsGoogleSubmitting(true);
+
+    try {
+      const res = await fetch(`${API_URL}/auth/oauth/google/url`);
+      const data = await res.json();
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        setShowGoogleModal(true);
+      }
+    } catch (err) {
+      console.warn('Real Google OAuth endpoint unreachable, falling back to account picker modal:', err);
+      setShowGoogleModal(true);
+    } finally {
+      setIsGoogleSubmitting(false);
     }
   }
 
@@ -412,18 +435,18 @@ export default function LoginPage() {
                 </span>
               </div>
 
-              {/* Google-Only Full Width Button (Opens Google Account Chooser) */}
+              {/* Google-Only Full Width Button (Triggers Real Google OAuth with Workspace support) */}
               <button
                 type="button"
-                onClick={() => setShowGoogleModal(true)}
+                onClick={handleStartGoogleOAuth}
                 disabled={isSubmitting || isGoogleSubmitting}
                 className="w-full py-1.5 sm:py-2 px-4 rounded-xl border border-slate-200/90 bg-white hover:bg-slate-50 active:scale-[0.99] transition-all flex items-center justify-center gap-2.5 text-xs sm:text-sm font-bold text-slate-700 shadow-2xs hover:border-slate-300 disabled:opacity-50 group"
-                title="Sign in with your Google account"
+                title="Sign in with your Google or Google Workspace account"
               >
                 {isGoogleSubmitting ? (
                   <>
                     <Loader2 className="h-3.5 w-3.5 animate-spin text-indigo-600" />
-                    <span>Signing in with Google...</span>
+                    <span>Connecting to Google...</span>
                   </>
                 ) : (
                   <>
@@ -449,6 +472,17 @@ export default function LoginPage() {
                   </>
                 )}
               </button>
+
+              {/* Dev / Test Preset Accounts Shortcut */}
+              <div className="mt-1 flex items-center justify-center">
+                <button
+                  type="button"
+                  onClick={() => setShowGoogleModal(true)}
+                  className="text-[10px] text-slate-400 hover:text-indigo-600 transition-colors font-medium underline"
+                >
+                  Quick Test Account Picker
+                </button>
+              </div>
 
               {/* Card Footer */}
               <div className="mt-2 text-center text-xs text-slate-500">

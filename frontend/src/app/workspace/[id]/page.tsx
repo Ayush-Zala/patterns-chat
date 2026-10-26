@@ -12,6 +12,7 @@ import {
   Copy,
   Check,
   ChevronDown,
+  ChevronUp,
   ChevronRight,
   Loader2,
   MessageSquare,
@@ -828,6 +829,23 @@ function WorkspaceShellContent() {
   const [showConnectMailModal, setShowConnectMailModal] = useState(false);
   const [connectEmailInput, setConnectEmailInput] = useState('');
   const [connectEmailProvider, setConnectEmailProvider] = useState<'GOOGLE' | 'MICROSOFT' | 'CUSTOM'>('GOOGLE');
+  const [customMailConfig, setCustomMailConfig] = useState({
+    emailAddress: '',
+    displayName: '',
+    imapHost: '',
+    imapPort: 993,
+    imapUser: '',
+    imapPassword: '',
+    imapTls: true,
+    smtpHost: '',
+    smtpPort: 587,
+    smtpUser: '',
+    smtpPassword: '',
+    smtpTls: true,
+  });
+  const [customMailError, setCustomMailError] = useState<string | null>(null);
+  const [isVerifyingCustomMail, setIsVerifyingCustomMail] = useState(false);
+  const [showAdvancedServerSettings, setShowAdvancedServerSettings] = useState(false);
   const [showComposeMailModal, setShowComposeMailModal] = useState(false);
   const [composeMailData, setComposeMailData] = useState({
     to: '',
@@ -843,6 +861,59 @@ function WorkspaceShellContent() {
   const [showCalendarModal, setShowCalendarModal] = useState(false);
   const [emailFilterMode, setEmailFilterMode] = useState<'all' | 'unread' | 'starred'>('all');
   const [inlineReplyText, setInlineReplyText] = useState('');
+  const [composeAttachments, setComposeAttachments] = useState<
+    Array<{ fileName: string; fileUrl: string; fileSize: number; contentType: string }>
+  >([]);
+  const [isUploadingComposeAttachment, setIsUploadingComposeAttachment] = useState(false);
+  const composeFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const [inlineReplyAttachments, setInlineReplyAttachments] = useState<
+    Array<{ fileName: string; fileUrl: string; fileSize: number; contentType: string }>
+  >([]);
+  const [isUploadingInlineAttachment, setIsUploadingInlineAttachment] = useState(false);
+  const inlineFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleUploadMailAttachment = async (
+    files: FileList | null,
+    target: 'compose' | 'inline',
+  ) => {
+    if (!files || files.length === 0 || !token) return;
+    const isCompose = target === 'compose';
+    if (isCompose) setIsUploadingComposeAttachment(true);
+    else setIsUploadingInlineAttachment(true);
+
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const formData = new FormData();
+        formData.append('file', file);
+        const res = await fetch(`${API_URL}/upload`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+          body: formData,
+        });
+        if (res.ok) {
+          const uploaded = await res.json();
+          const item = {
+            fileName: uploaded.fileName || file.name,
+            fileUrl: uploaded.fileUrl || uploaded.url,
+            fileSize: uploaded.fileSize || file.size,
+            contentType: uploaded.fileType || file.type || 'application/octet-stream',
+          };
+          if (isCompose) {
+            setComposeAttachments((prev) => [...prev, item]);
+          } else {
+            setInlineReplyAttachments((prev) => [...prev, item]);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Mail attachment upload failed:', err);
+    } finally {
+      if (isCompose) setIsUploadingComposeAttachment(false);
+      else setIsUploadingInlineAttachment(false);
+    }
+  };
 
   const selectedMailAccount = useMemo(() => {
     return mailAccounts.find((a) => a.id === selectedMailAccountId) || mailAccounts[0] || null;
@@ -1196,6 +1267,78 @@ function WorkspaceShellContent() {
     }
   }
 
+  async function handleConnectCustomEmail(e: React.FormEvent) {
+    e.preventDefault();
+    if (!customMailConfig.emailAddress.includes('@')) {
+      setCustomMailError('Please enter a valid work email address.');
+      return;
+    }
+    setCustomMailError(null);
+    setIsVerifyingCustomMail(true);
+
+    try {
+      const emailDomain = customMailConfig.emailAddress.split('@')[1]?.trim();
+      const resolvedImapHost = (customMailConfig.imapHost.trim() || `mail.${emailDomain}`).trim();
+      const resolvedSmtpHost = (customMailConfig.smtpHost.trim() || `mail.${emailDomain}`).trim();
+      const resolvedImapUser = customMailConfig.imapUser.trim() || customMailConfig.emailAddress.trim().toLowerCase();
+      const resolvedSmtpUser = customMailConfig.smtpUser.trim() || resolvedImapUser;
+
+      const res = await fetch(`${API_URL}/mail/accounts/connect`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          emailAddress: customMailConfig.emailAddress.trim().toLowerCase(),
+          displayName: customMailConfig.displayName.trim() || customMailConfig.emailAddress.split('@')[0],
+          provider: 'CUSTOM',
+          imapHost: resolvedImapHost,
+          imapPort: Number(customMailConfig.imapPort) || 993,
+          imapUser: resolvedImapUser,
+          imapPassword: customMailConfig.imapPassword,
+          imapTls: customMailConfig.imapTls,
+          smtpHost: resolvedSmtpHost,
+          smtpPort: Number(customMailConfig.smtpPort) || 587,
+          smtpUser: resolvedSmtpUser,
+          smtpPassword: customMailConfig.imapPassword,
+          smtpTls: customMailConfig.smtpTls,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.message || 'Failed to verify and connect mail server.');
+      }
+
+      setShowConnectMailModal(false);
+      setCustomMailConfig({
+        emailAddress: '',
+        displayName: '',
+        imapHost: '',
+        imapPort: 993,
+        imapUser: '',
+        imapPassword: '',
+        imapTls: true,
+        smtpHost: '',
+        smtpPort: 587,
+        smtpUser: '',
+        smtpPassword: '',
+        smtpTls: true,
+      });
+      await loadMailAccounts();
+      setSelectedMailAccountId(data.id);
+      setMailFolder('INBOX');
+      await loadMailMessages(data.id, 'INBOX');
+      setCallNotificationMsg(`Connected corporate mailbox: ${data.emailAddress}`);
+      setTimeout(() => setCallNotificationMsg(null), 4000);
+    } catch (err: any) {
+      setCustomMailError(err?.message || 'Connection failed. Please verify server host, port, and password.');
+    } finally {
+      setIsVerifyingCustomMail(false);
+    }
+  }
+
   const googleClientId =
     process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ||
     '758995093643-eackobpibmmqga6lfd6fht757l2dd5h8.apps.googleusercontent.com';
@@ -1223,6 +1366,7 @@ function WorkspaceShellContent() {
           subject: composeMailData.subject.trim() || '(No Subject)',
           bodyHtml: `<p>${composeMailData.body.replace(/\n/g, '<br/>')}</p>`,
           bodyText: composeMailData.body,
+          attachments: composeAttachments,
         }),
       });
 
@@ -1230,6 +1374,7 @@ function WorkspaceShellContent() {
         const sendResult = await res.json();
         setShowComposeMailModal(false);
         setComposeMailData({ to: '', cc: '', subject: '', body: '' });
+        setComposeAttachments([]);
         if (sendResult.sentViaGmail) {
           setCallNotificationMsg('Email sent successfully via Gmail API!');
         } else if (sendResult.gmailError === 'REQUIRES_REAUTH') {
@@ -1267,12 +1412,14 @@ function WorkspaceShellContent() {
           subject: selectedEmail.subject.startsWith('Re:') ? selectedEmail.subject : `Re: ${selectedEmail.subject}`,
           bodyHtml: `<p>${inlineReplyText.replace(/\n/g, '<br/>')}</p><br/><blockquote>On ${new Date(selectedEmail.receivedAt).toLocaleString()}, ${selectedEmail.fromName || selectedEmail.fromAddress} wrote:<br/>${selectedEmail.bodyHtml || selectedEmail.snippet}</blockquote>`,
           bodyText: inlineReplyText,
+          attachments: inlineReplyAttachments,
         }),
       });
 
       if (res.ok) {
         const sendResult = await res.json();
         setInlineReplyText('');
+        setInlineReplyAttachments([]);
         if (sendResult.sentViaGmail) {
           setCallNotificationMsg('Reply sent successfully via Gmail API!');
         } else if (sendResult.gmailError === 'REQUIRES_REAUTH') {
@@ -6047,35 +6194,90 @@ function WorkspaceShellContent() {
                     />
 
                     {/* Attachments Section */}
-                    {selectedEmail.attachments && selectedEmail.attachments.length > 0 && (
-                      <div className="pt-6 border-t border-slate-100">
-                        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">
-                          Attachments ({selectedEmail.attachments.length})
-                        </h4>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                          {selectedEmail.attachments.map((att: any, idx: number) => (
-                            <a
-                              key={idx}
-                              href={att.fileUrl || '#'}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="p-3 rounded-2xl border border-slate-200 bg-slate-50 hover:bg-indigo-50/50 hover:border-indigo-200 transition-all flex items-center justify-between group"
-                            >
-                              <div className="flex items-center gap-2.5 truncate">
-                                <div className="p-2 rounded-xl bg-white border border-slate-200 text-indigo-600 group-hover:scale-105 transition-transform">
-                                  <FileText className="w-4 h-4" />
+                    {(() => {
+                      const currentAttachments: Array<{ fileName: string; fileUrl: string; fileSize: number; contentType?: string }> =
+                        (selectedEmail.attachments && selectedEmail.attachments.length > 0)
+                          ? selectedEmail.attachments
+                          : (selectedEmail.attachmentsJson && Array.isArray(selectedEmail.attachmentsJson) && selectedEmail.attachmentsJson.length > 0)
+                          ? (selectedEmail.attachmentsJson as any)
+                          : [];
+
+                      if (currentAttachments.length === 0) return null;
+
+                      return (
+                        <div className="pt-6 border-t border-slate-100">
+                          <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                            <Paperclip className="w-3.5 h-3.5 text-indigo-600" />
+                            <span>Attachments ({currentAttachments.length})</span>
+                          </h4>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            {currentAttachments.map((att: any, idx: number) => {
+                              const fullUrl = att.fileUrl.startsWith('http')
+                                ? att.fileUrl
+                                : `${API_URL.replace(/\/api\/?$/, '')}${att.fileUrl}`;
+                              const filenameOnly = att.fileUrl.split('/').pop() || att.fileName;
+                              const downloadUrl = `${API_URL}/upload/download/${filenameOnly}?name=${encodeURIComponent(att.fileName)}`;
+                              const isImage = att.contentType?.startsWith('image/') || /\.(webp|png|jpg|jpeg|gif|svg)$/i.test(att.fileName);
+
+                              return (
+                                <div
+                                  key={idx}
+                                  className="p-3 rounded-2xl border border-slate-200/80 bg-slate-50/70 hover:bg-white hover:border-indigo-300 hover:shadow-md transition-all flex flex-col justify-between group"
+                                >
+                                  {isImage && (
+                                    <div
+                                      onClick={() => window.open(fullUrl, '_blank')}
+                                      className="mb-2.5 rounded-xl overflow-hidden bg-slate-100 border border-slate-200/60 max-h-48 flex items-center justify-center cursor-pointer group-hover:border-indigo-200"
+                                      title="Click to view full image"
+                                    >
+                                      <img
+                                        src={fullUrl}
+                                        alt={att.fileName}
+                                        className="w-full h-auto max-h-48 object-contain hover:scale-105 transition-transform duration-200"
+                                      />
+                                    </div>
+                                  )}
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="flex items-center gap-2.5 min-w-0">
+                                      <div className="p-2 rounded-xl bg-white border border-slate-200 text-indigo-600 shadow-2xs group-hover:scale-105 transition-transform shrink-0">
+                                        <FileText className="w-4 h-4" />
+                                      </div>
+                                      <div className="min-w-0">
+                                        <p className="text-xs font-bold text-slate-800 truncate" title={att.fileName}>
+                                          {att.fileName}
+                                        </p>
+                                        <span className="text-[10px] text-slate-400 font-medium">
+                                          {formatFileSize(att.fileSize)}
+                                        </span>
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-1 shrink-0">
+                                      <a
+                                        href={fullUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
+                                        title="View / Open File"
+                                      >
+                                        <ExternalLink className="w-3.5 h-3.5" />
+                                      </a>
+                                      <a
+                                        href={downloadUrl}
+                                        download={att.fileName}
+                                        className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
+                                        title="Download File"
+                                      >
+                                        <Download className="w-3.5 h-3.5" />
+                                      </a>
+                                    </div>
+                                  </div>
                                 </div>
-                                <div className="truncate">
-                                  <p className="text-xs font-bold text-slate-800 truncate">{att.fileName}</p>
-                                  <span className="text-[10px] text-slate-400">{formatFileSize(att.fileSize)}</span>
-                                </div>
-                              </div>
-                              <Download className="w-4 h-4 text-slate-400 group-hover:text-indigo-600 shrink-0 ml-2" />
-                            </a>
-                          ))}
+                              );
+                            })}
+                          </div>
                         </div>
-                      </div>
-                    )}
+                      );
+                    })()}
                   </div>
                 </div>
 
@@ -6128,24 +6330,55 @@ function WorkspaceShellContent() {
                       className="w-full p-3.5 bg-transparent resize-none border-none focus:outline-none text-xs sm:text-sm text-slate-800 placeholder-slate-400 font-medium leading-relaxed"
                     />
 
+                    {/* Attached Files Preview Chips */}
+                    {inlineReplyAttachments.length > 0 && (
+                      <div className="flex flex-wrap gap-2 px-3 pb-2">
+                        {inlineReplyAttachments.map((att, idx) => (
+                          <div
+                            key={idx}
+                            className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-700 text-xs font-semibold"
+                          >
+                            <Paperclip className="w-3 h-3 text-indigo-500" />
+                            <span className="truncate max-w-[150px]">{att.fileName}</span>
+                            <span className="text-[10px] text-indigo-400">({formatFileSize(att.fileSize)})</span>
+                            <button
+                              type="button"
+                              onClick={() => setInlineReplyAttachments((prev) => prev.filter((_, i) => i !== idx))}
+                              className="ml-1 text-indigo-400 hover:text-indigo-600 rounded p-0.5"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
                     {/* Composer Bottom Toolbar */}
                     <div className="flex items-center justify-between px-3 py-2 bg-slate-50/50 border-t border-slate-100">
                       <div className="flex items-center gap-1">
+                        <input
+                          type="file"
+                          multiple
+                          ref={inlineFileInputRef}
+                          className="hidden"
+                          onChange={(e) => {
+                            handleUploadMailAttachment(e.target.files, 'inline');
+                            e.target.value = '';
+                          }}
+                        />
                         <button
                           type="button"
-                          onClick={() => {
-                            setComposeMailData({
-                              to: selectedEmail.fromAddress,
-                              cc: '',
-                              subject: selectedEmail.subject.startsWith('Re:') ? selectedEmail.subject : `Re: ${selectedEmail.subject}`,
-                              body: inlineReplyText,
-                            });
-                            setShowComposeMailModal(true);
-                          }}
-                          className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors"
-                          title="Attach files or format email"
+                          onClick={() => inlineFileInputRef.current?.click()}
+                          disabled={isUploadingInlineAttachment}
+                          className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors flex items-center gap-1 text-xs"
+                          title="Attach files to reply"
                         >
-                          <Paperclip className="h-4 w-4" />
+                          {isUploadingInlineAttachment ? (
+                            <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
+                          ) : (
+                            <Paperclip className="h-4 w-4" />
+                          )}
+                          <span className="text-[11px] font-semibold text-slate-600 hidden sm:inline">Attach</span>
                         </button>
                         <span className="text-[10px] text-slate-400 font-medium px-2 hidden sm:inline">
                           Markdown & quotes supported
@@ -11479,56 +11712,316 @@ function WorkspaceShellContent() {
       {/* ───────────────────────────────────────────────────────────── */}
       {/* CONNECT EMAIL VIA OAUTH MODAL */}
       {/* ───────────────────────────────────────────────────────────── */}
+      {/* CONNECT EMAIL VIA OAUTH OR CUSTOM IMAP/SMTP MODAL */}
+      {/* ───────────────────────────────────────────────────────────── */}
       {showConnectMailModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
-          <div className="w-full max-w-md rounded-3xl bg-white border border-slate-200 shadow-2xl p-6 text-slate-800 space-y-4">
+          <div className="w-full max-w-lg rounded-3xl bg-white border border-slate-200 shadow-2xl p-6 text-slate-800 space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-indigo-600 to-violet-600 flex items-center justify-center text-white shadow-md shadow-indigo-200">
                   <Mail className="h-5 w-5" />
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-slate-900">Connect Email Account</h3>
-                  <p className="text-xs text-slate-500">Google Workspace or Gmail</p>
+                  <h3 className="text-base font-bold text-slate-900">Connect Email Mailbox</h3>
+                  <p className="text-xs text-slate-500">Google Workspace or Company IMAP/SMTP</p>
                 </div>
               </div>
               <button
                 type="button"
-                onClick={() => setShowConnectMailModal(false)}
+                onClick={() => {
+                  setShowConnectMailModal(false);
+                  setCustomMailError(null);
+                }}
                 className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
               >
                 <X className="h-5 w-5" />
               </button>
             </div>
 
-            <div className="space-y-3 pt-2">
-              {/* Google OAuth Button */}
+            {/* Provider Tabs */}
+            <div className="flex items-center p-1 bg-slate-100 rounded-xl border border-slate-200/60 text-xs font-bold">
               <button
                 type="button"
-                onClick={() => handleConnectEmail('GOOGLE')}
-                className="w-full py-3 px-4 rounded-2xl border border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700 font-bold text-xs flex items-center justify-center gap-3 transition-all shadow-xs group"
+                onClick={() => {
+                  setConnectEmailProvider('GOOGLE');
+                  setCustomMailError(null);
+                }}
+                className={`flex-1 py-1.5 px-3 rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                  connectEmailProvider === 'GOOGLE'
+                    ? 'bg-white text-indigo-600 shadow-xs'
+                    : 'text-slate-500 hover:text-slate-900'
+                }`}
               >
-                <svg className="w-4 h-4" viewBox="0 0 24 24">
-                  <path
-                    fill="#4285F4"
-                    d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                  />
-                  <path
-                    fill="#34A853"
-                    d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                  />
-                  <path
-                    fill="#FBBC05"
-                    d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-                  />
-                  <path
-                    fill="#EA4335"
-                    d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-                  />
-                </svg>
-                <span>Continue with Google</span>
+                <span>Google / Workspace</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setConnectEmailProvider('CUSTOM');
+                  setCustomMailError(null);
+                }}
+                className={`flex-1 py-1.5 px-3 rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                  connectEmailProvider === 'CUSTOM'
+                    ? 'bg-white text-indigo-600 shadow-xs'
+                    : 'text-slate-500 hover:text-slate-900'
+                }`}
+              >
+                <span>Company IMAP / SMTP</span>
               </button>
             </div>
+
+            {/* TAB 1: GOOGLE / GOOGLE WORKSPACE */}
+            {connectEmailProvider === 'GOOGLE' && (
+              <div className="space-y-4 pt-1">
+                <div className="p-3.5 rounded-2xl bg-indigo-50/70 border border-indigo-100 text-xs text-indigo-900 leading-relaxed">
+                  <p className="font-bold mb-1">Google Workspace & Gmail OAuth 2.0</p>
+                  <p className="text-slate-600 text-[11px]">
+                    Connect your business or personal Google account. Live sync lets you read, reply, and compose messages securely through Google&apos;s API.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => handleConnectEmail('GOOGLE')}
+                  className="w-full py-3 px-4 rounded-2xl border border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700 font-bold text-xs flex items-center justify-center gap-3 transition-all shadow-xs group"
+                >
+                  <svg className="w-4 h-4 shrink-0 transition-transform group-hover:scale-110" viewBox="0 0 24 24">
+                    <path
+                      fill="#4285F4"
+                      d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                    />
+                    <path
+                      fill="#34A853"
+                      d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                    />
+                    <path
+                      fill="#FBBC05"
+                      d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                    />
+                    <path
+                      fill="#EA4335"
+                      d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                    />
+                  </svg>
+                  <span>Authorize with Google</span>
+                </button>
+              </div>
+            )}
+
+            {/* TAB 2: CUSTOM COMPANY IMAP / SMTP */}
+            {connectEmailProvider === 'CUSTOM' && (
+              <form onSubmit={handleConnectCustomEmail} className="space-y-3 pt-1">
+                {customMailError && (
+                  <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
+                    <span>{customMailError}</span>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div className="col-span-2">
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                      Work Email Address *
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      value={customMailConfig.emailAddress}
+                      onChange={(e) =>
+                        setCustomMailConfig((prev) => ({
+                          ...prev,
+                          emailAddress: e.target.value,
+                          imapHost: prev.imapHost || (e.target.value.includes('@') ? `mail.${e.target.value.split('@')[1]}` : ''),
+                          smtpHost: prev.smtpHost || (e.target.value.includes('@') ? `mail.${e.target.value.split('@')[1]}` : ''),
+                        }))
+                      }
+                      placeholder="you@company.com"
+                      className="w-full px-3 py-1.5 rounded-xl border border-slate-200 text-xs text-slate-900 focus:outline-none focus:border-indigo-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                      Display Name
+                    </label>
+                    <input
+                      type="text"
+                      value={customMailConfig.displayName}
+                      onChange={(e) => setCustomMailConfig((prev) => ({ ...prev, displayName: e.target.value }))}
+                      placeholder="e.g. Alex Miller"
+                      className="w-full px-3 py-1.5 rounded-xl border border-slate-200 text-xs text-slate-900 focus:outline-none focus:border-indigo-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                      Mailbox Password *
+                    </label>
+                    <input
+                      type="password"
+                      required
+                      value={customMailConfig.imapPassword}
+                      onChange={(e) =>
+                        setCustomMailConfig((prev) => ({
+                          ...prev,
+                          imapPassword: e.target.value,
+                          smtpPassword: e.target.value,
+                        }))
+                      }
+                      placeholder="Account or App Password"
+                      className="w-full px-3 py-1.5 rounded-xl border border-slate-200 text-xs text-slate-900 focus:outline-none focus:border-indigo-500"
+                    />
+                  </div>
+
+                  <div className="col-span-2">
+                    <label className="block text-[11px] font-bold text-slate-700 mb-0.5">
+                      Login Username <span className="text-slate-400 font-normal">(Optional — if different from email)</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={customMailConfig.imapUser}
+                      onChange={(e) =>
+                        setCustomMailConfig((prev) => ({
+                          ...prev,
+                          imapUser: e.target.value,
+                          smtpUser: e.target.value,
+                        }))
+                      }
+                      placeholder="e.g. ayush.zala (leave empty to use full email address)"
+                      className="w-full px-3 py-1.5 rounded-xl border border-slate-200 text-xs text-slate-900 focus:outline-none focus:border-indigo-500"
+                    />
+                    <p className="text-[10px] text-slate-400 mt-0.5">
+                      If your mail server requires a username like <span className="font-mono text-slate-600">ayush.zala</span> instead of full email, enter it here.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Advanced Server Settings Toggle */}
+                <div className="pt-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setShowAdvancedServerSettings((prev) => !prev)}
+                    className="w-full flex items-center justify-between p-2.5 rounded-xl border border-dashed border-slate-200 hover:border-indigo-300 hover:bg-slate-50/70 text-slate-600 transition-all text-xs group"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Settings className="w-3.5 h-3.5 text-slate-400 group-hover:text-indigo-600 transition-colors" />
+                      <span className="font-semibold text-slate-700 group-hover:text-indigo-600">
+                        Advanced Server Settings (IMAP & SMTP)
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                      <span>{showAdvancedServerSettings ? 'Hide' : 'Configure Custom Ports'}</span>
+                      {showAdvancedServerSettings ? (
+                        <ChevronUp className="w-3.5 h-3.5 text-slate-400 group-hover:text-indigo-600" />
+                      ) : (
+                        <ChevronDown className="w-3.5 h-3.5 text-slate-400 group-hover:text-indigo-600" />
+                      )}
+                    </div>
+                  </button>
+
+                  {!showAdvancedServerSettings && customMailConfig.emailAddress.includes('@') && (
+                    <p className="text-[10px] text-slate-400 mt-1 px-1">
+                      Auto-configured: <span className="font-mono text-slate-600">{customMailConfig.imapHost || `mail.${customMailConfig.emailAddress.split('@')[1]}`}</span> (SSL Ports 993 & 465)
+                    </p>
+                  )}
+                </div>
+
+                {showAdvancedServerSettings && (
+                  <div className="space-y-2.5 animate-in fade-in duration-200">
+                    {/* IMAP Server Settings */}
+                    <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200/80 space-y-2">
+                      <p className="text-[11px] font-extrabold text-slate-700 uppercase tracking-wider">
+                        Incoming Mail Server (IMAP)
+                      </p>
+                      <div className="grid grid-cols-3 gap-2">
+                        <div className="col-span-2">
+                          <label className="block text-[10px] font-semibold text-slate-500 mb-0.5">
+                            IMAP Host
+                          </label>
+                          <input
+                            type="text"
+                            value={customMailConfig.imapHost}
+                            onChange={(e) => setCustomMailConfig((prev) => ({ ...prev, imapHost: e.target.value }))}
+                            placeholder="mail.company.com"
+                            className="w-full px-2.5 py-1 rounded-lg border border-slate-200 bg-white text-xs text-slate-900 focus:outline-none focus:border-indigo-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-semibold text-slate-500 mb-0.5">
+                            Port
+                          </label>
+                          <input
+                            type="number"
+                            value={customMailConfig.imapPort}
+                            onChange={(e) => setCustomMailConfig((prev) => ({ ...prev, imapPort: Number(e.target.value) }))}
+                            placeholder="993"
+                            className="w-full px-2.5 py-1 rounded-lg border border-slate-200 bg-white text-xs text-slate-900 focus:outline-none focus:border-indigo-500"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* SMTP Server Settings */}
+                    <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200/80 space-y-2">
+                      <p className="text-[11px] font-extrabold text-slate-700 uppercase tracking-wider">
+                        Outgoing Mail Server (SMTP)
+                      </p>
+                      <div className="grid grid-cols-3 gap-2">
+                        <div className="col-span-2">
+                          <label className="block text-[10px] font-semibold text-slate-500 mb-0.5">
+                            SMTP Host
+                          </label>
+                          <input
+                            type="text"
+                            value={customMailConfig.smtpHost}
+                            onChange={(e) => setCustomMailConfig((prev) => ({ ...prev, smtpHost: e.target.value }))}
+                            placeholder="smtp.company.com"
+                            className="w-full px-2.5 py-1 rounded-lg border border-slate-200 bg-white text-xs text-slate-900 focus:outline-none focus:border-indigo-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-semibold text-slate-500 mb-0.5">
+                            Port
+                          </label>
+                          <input
+                            type="number"
+                            value={customMailConfig.smtpPort}
+                            onChange={(e) => setCustomMailConfig((prev) => ({ ...prev, smtpPort: Number(e.target.value) }))}
+                            placeholder="587"
+                            className="w-full px-2.5 py-1 rounded-lg border border-slate-200 bg-white text-xs text-slate-900 focus:outline-none focus:border-indigo-500"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setShowConnectMailModal(false)}
+                    className="px-3.5 py-1.5 rounded-xl text-xs font-semibold text-slate-500 hover:text-slate-800 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isVerifyingCustomMail || !customMailConfig.emailAddress || !customMailConfig.imapPassword}
+                    className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:scale-[0.99] text-white font-bold text-xs transition-all shadow-md shadow-indigo-200 disabled:opacity-50 flex items-center gap-1.5"
+                  >
+                    {isVerifyingCustomMail ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Verifying Server...</span>
+                      </>
+                    ) : (
+                      <span>Verify & Connect</span>
+                    )}
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )}
@@ -11604,21 +12097,75 @@ function WorkspaceShellContent() {
                   className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all font-medium resize-none"
                 />
               </div>
+
+              {/* Attached Files Preview Chips */}
+              {composeAttachments.length > 0 && (
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+                    Attached Files ({composeAttachments.length})
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    {composeAttachments.map((att, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-700 text-xs font-semibold"
+                      >
+                        <Paperclip className="w-3.5 h-3.5 text-indigo-500" />
+                        <span className="truncate max-w-[180px]">{att.fileName}</span>
+                        <span className="text-[10px] text-indigo-400">({formatFileSize(att.fileSize)})</span>
+                        <button
+                          type="button"
+                          onClick={() => setComposeAttachments((prev) => prev.filter((_, i) => i !== idx))}
+                          className="ml-1 text-indigo-400 hover:text-indigo-600 rounded p-0.5"
+                          title="Remove attachment"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="flex items-center justify-between pt-2 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => setShowComposeMailModal(false)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-500 hover:bg-slate-100 transition-colors"
-              >
-                Discard
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowComposeMailModal(false)}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-500 hover:bg-slate-100 transition-colors"
+                >
+                  Discard
+                </button>
+                <input
+                  type="file"
+                  multiple
+                  ref={composeFileInputRef}
+                  className="hidden"
+                  onChange={(e) => {
+                    handleUploadMailAttachment(e.target.files, 'compose');
+                    e.target.value = '';
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => composeFileInputRef.current?.click()}
+                  disabled={isUploadingComposeAttachment}
+                  className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 hover:border-indigo-200 transition-all flex items-center gap-1.5"
+                >
+                  {isUploadingComposeAttachment ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600" />
+                  ) : (
+                    <Paperclip className="w-3.5 h-3.5" />
+                  )}
+                  <span>Attach Files</span>
+                </button>
+              </div>
               <button
                 type="button"
                 onClick={handleSendEmail}
                 disabled={isSendingMail || !composeMailData.to.trim()}
-                className="py-2.5 px-5 rounded-2xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white font-bold text-xs shadow-md shadow-indigo-200 flex items-center gap-2 transition-all"
+                className="py-2.5 px-5 rounded-2xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white font-bold text-xs shadow-md shadow-indigo-200 flex items-center gap-2 transition-all cursor-pointer disabled:cursor-not-allowed"
               >
                 {isSendingMail ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
                 <span>Send Email</span>

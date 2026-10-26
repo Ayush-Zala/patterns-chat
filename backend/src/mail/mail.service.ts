@@ -1,6 +1,11 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service.js';
 import { EmailProvider, EmailFolder } from '@prisma/client';
+import { ImapFlow } from 'imapflow';
+import nodemailer from 'nodemailer';
+import { simpleParser } from 'mailparser';
+import { join, extname } from 'path';
+import { existsSync, mkdirSync, promises as fsPromises } from 'fs';
 
 @Injectable()
 export class MailService {
@@ -246,18 +251,123 @@ export class MailService {
       emailAddress: string;
       provider?: EmailProvider;
       displayName?: string;
+      imapHost?: string;
+      imapPort?: number;
+      imapUser?: string;
+      imapPassword?: string;
+      imapTls?: boolean;
+      smtpHost?: string;
+      smtpPort?: number;
+      smtpUser?: string;
+      smtpPassword?: string;
+      smtpTls?: boolean;
     },
   ) {
     if (!data.emailAddress || !data.emailAddress.includes('@')) {
       throw new BadRequestException('A valid email address is required.');
     }
 
-    return this.upsertAccountAndSeed(userId, {
-      emailAddress: data.emailAddress.trim().toLowerCase(),
+    const cleanEmail = data.emailAddress.trim().toLowerCase();
+
+    // Verify IMAP connection if credentials provided
+    if (data.imapHost && data.imapPassword) {
+      const client = new ImapFlow({
+        host: data.imapHost.trim(),
+        port: data.imapPort || 993,
+        secure: data.imapTls !== false,
+        auth: {
+          user: data.imapUser?.trim() || cleanEmail,
+          pass: data.imapPassword,
+        },
+        tls: {
+          rejectUnauthorized: false,
+        },
+        logger: false,
+      });
+
+      try {
+        await client.connect();
+        await client.logout();
+      } catch (err: any) {
+        const detail = err?.responseText || err?.message || 'Invalid username, password, or server settings';
+        throw new BadRequestException(`IMAP verification failed: ${detail}`);
+      }
+    }
+
+    // Verify SMTP connection if credentials provided
+    if (data.smtpHost && data.smtpPassword) {
+      const preferredPort = Number(data.smtpPort) || 587;
+      const candidatePorts = preferredPort === 465 ? [465, 587] : [preferredPort, 587, 465];
+      const uniquePorts = Array.from(new Set(candidatePorts));
+
+      let smtpVerified = false;
+      let lastSmtpError: any = null;
+      let workingPort = preferredPort;
+
+      for (const port of uniquePorts) {
+        try {
+          const transporter = nodemailer.createTransport({
+            host: data.smtpHost.trim(),
+            port,
+            secure: port === 465 || port === 587,
+            auth: {
+              user: data.smtpUser?.trim() || cleanEmail,
+              pass: data.smtpPassword,
+            },
+            tls: {
+              rejectUnauthorized: false,
+            },
+          });
+
+          await transporter.verify();
+          workingPort = port;
+          smtpVerified = true;
+          break;
+        } catch (err: any) {
+          lastSmtpError = err;
+          // If server explicitly rejected credentials (e.g. 535 Invalid Username or Password), don't mask it with connection errors on other ports
+          if (err?.responseCode === 535 || err?.message?.toLowerCase().includes('auth') || err?.message?.toLowerCase().includes('password')) {
+            break;
+          }
+        }
+      }
+
+      if (!smtpVerified) {
+        throw new BadRequestException(
+          `SMTP verification failed: ${lastSmtpError?.message || 'Could not authenticate with SMTP server. Please check host, port, and password.'}`,
+        );
+      }
+
+      data.smtpPort = workingPort;
+    }
+
+    const savedAccount = await this.upsertAccountAndSeed(userId, {
+      emailAddress: cleanEmail,
       provider: data.provider || EmailProvider.CUSTOM,
-      displayName: data.displayName || data.emailAddress.split('@')[0],
+      displayName: data.displayName || cleanEmail.split('@')[0],
       accessToken: 'custom_token',
+      imapHost: data.imapHost?.trim(),
+      imapPort: data.imapPort,
+      imapUser: data.imapUser?.trim() || cleanEmail,
+      imapPassword: data.imapPassword,
+      imapTls: data.imapTls !== false,
+      smtpHost: data.smtpHost?.trim(),
+      smtpPort: data.smtpPort,
+      smtpUser: data.smtpUser?.trim() || cleanEmail,
+      smtpPassword: data.smtpPassword,
+      smtpTls: data.smtpTls !== false,
     });
+
+    // If live IMAP configured, perform initial sync right away
+    if (savedAccount.imapHost && (savedAccount as any).imapPassword) {
+      try {
+        await this.syncCustomImapAccount(savedAccount);
+      } catch (syncErr) {
+        console.warn('Initial IMAP sync warning:', syncErr);
+      }
+    }
+
+    return savedAccount;
   }
 
   // Helper to upsert account & seed initial emails
@@ -269,6 +379,16 @@ export class MailService {
       displayName: string;
       accessToken?: string;
       refreshToken?: string;
+      imapHost?: string;
+      imapPort?: number;
+      imapUser?: string;
+      imapPassword?: string;
+      imapTls?: boolean;
+      smtpHost?: string;
+      smtpPort?: number;
+      smtpUser?: string;
+      smtpPassword?: string;
+      smtpTls?: boolean;
     },
   ) {
     let account = await this.prisma.emailAccount.findUnique({
@@ -289,18 +409,40 @@ export class MailService {
           displayName: accountData.displayName,
           accessToken: accountData.accessToken,
           refreshToken: accountData.refreshToken,
+          imapHost: accountData.imapHost,
+          imapPort: accountData.imapPort,
+          imapUser: accountData.imapUser,
+          imapPassword: accountData.imapPassword,
+          imapTls: accountData.imapTls ?? true,
+          smtpHost: accountData.smtpHost,
+          smtpPort: accountData.smtpPort,
+          smtpUser: accountData.smtpUser,
+          smtpPassword: accountData.smtpPassword,
+          smtpTls: accountData.smtpTls ?? true,
           lastSyncedAt: new Date(),
         },
       });
 
-      // Seed realistic corporate welcome emails for immediate testing
-      await this.seedInitialEmailsForAccount(account.id, account.emailAddress);
+      // Seed realistic corporate welcome emails for immediate testing if not live IMAP
+      if (!accountData.imapHost) {
+        await this.seedInitialEmailsForAccount(account.id, account.emailAddress);
+      }
     } else {
       account = await this.prisma.emailAccount.update({
         where: { id: account.id },
         data: {
           accessToken: accountData.accessToken || account.accessToken,
           refreshToken: accountData.refreshToken || account.refreshToken,
+          imapHost: accountData.imapHost !== undefined ? accountData.imapHost : (account as any).imapHost,
+          imapPort: accountData.imapPort !== undefined ? accountData.imapPort : (account as any).imapPort,
+          imapUser: accountData.imapUser !== undefined ? accountData.imapUser : (account as any).imapUser,
+          imapPassword: accountData.imapPassword !== undefined ? accountData.imapPassword : (account as any).imapPassword,
+          imapTls: accountData.imapTls !== undefined ? accountData.imapTls : (account as any).imapTls,
+          smtpHost: accountData.smtpHost !== undefined ? accountData.smtpHost : (account as any).smtpHost,
+          smtpPort: accountData.smtpPort !== undefined ? accountData.smtpPort : (account as any).smtpPort,
+          smtpUser: accountData.smtpUser !== undefined ? accountData.smtpUser : (account as any).smtpUser,
+          smtpPassword: accountData.smtpPassword !== undefined ? accountData.smtpPassword : (account as any).smtpPassword,
+          smtpTls: accountData.smtpTls !== undefined ? accountData.smtpTls : (account as any).smtpTls,
           lastSyncedAt: new Date(),
           isActive: true,
         },
@@ -515,14 +657,20 @@ export class MailService {
           isRead: true,
           isStarred: true,
           hasAttachments: true,
+          attachmentsJson: true,
           receivedAt: true,
           createdAt: true,
         },
       }),
     ]);
 
+    const mappedMessages = messages.map((m: any) => ({
+      ...m,
+      attachments: m.attachmentsJson || [],
+    }));
+
     return {
-      messages,
+      messages: mappedMessages,
       total,
       page,
       totalPages: Math.ceil(total / limit),
@@ -556,7 +704,9 @@ export class MailService {
       }
     }
 
-    return message;
+    const result: any = { ...message };
+    result.attachments = message.attachmentsJson || [];
+    return result;
   }
 
   // Toggle read/unread status
@@ -623,6 +773,12 @@ export class MailService {
       subject: string;
       bodyHtml: string;
       bodyText?: string;
+      attachments?: Array<{
+        fileName: string;
+        fileUrl: string;
+        fileSize: number;
+        contentType: string;
+      }>;
     },
   ) {
     const account = await this.prisma.emailAccount.findFirst({
@@ -737,6 +893,54 @@ export class MailService {
       }
     }
 
+    let sentViaSmtp = false;
+    let smtpError: string | null = null;
+
+    // If custom company email with SMTP credentials, dispatch live via SMTP
+    if (account.provider === EmailProvider.CUSTOM && (account as any).smtpHost && (account as any).smtpPassword) {
+      try {
+        const transporter = nodemailer.createTransport({
+          host: (account as any).smtpHost,
+          port: (account as any).smtpPort || 587,
+          secure: (account as any).smtpPort === 465 || (account as any).smtpPort === 587 || (account as any).smtpTls !== false,
+          auth: {
+            user: (account as any).smtpUser || account.emailAddress,
+            pass: (account as any).smtpPassword,
+          },
+          tls: {
+            rejectUnauthorized: false,
+          },
+        });
+
+        const mailAttachments = (data.attachments || []).map((att) => {
+          const cleanPath = att.fileUrl.startsWith('/') ? att.fileUrl.slice(1) : att.fileUrl;
+          return {
+            filename: att.fileName,
+            path: join(process.cwd(), cleanPath),
+            contentType: att.contentType,
+          };
+        });
+
+        const sendInfo = await transporter.sendMail({
+          from: `"${account.displayName || account.emailAddress.split('@')[0]}" <${account.emailAddress}>`,
+          to: cleanTo,
+          cc: data.cc || [],
+          subject: data.subject || '(no subject)',
+          html: data.bodyHtml,
+          text: data.bodyText || (data.bodyHtml || '').replace(/<[^>]*>?/gm, ''),
+          attachments: mailAttachments,
+        });
+
+        if (sendInfo.messageId) {
+          externalMessageId = sendInfo.messageId;
+          sentViaSmtp = true;
+        }
+      } catch (smtpErr: any) {
+        console.warn('Custom SMTP send failed, falling back to internal record:', smtpErr);
+        smtpError = smtpErr?.message || 'SMTP_SEND_FAILED';
+      }
+    }
+
     // Save sent message in SENT folder for sender
     const sentMessage = await this.prisma.emailMessage.create({
       data: {
@@ -753,7 +957,8 @@ export class MailService {
         bodyText: data.bodyText || data.bodyHtml.replace(/<[^>]*>?/gm, ''),
         isRead: true,
         isStarred: false,
-        hasAttachments: false,
+        hasAttachments: Boolean(data.attachments && data.attachments.length > 0),
+        attachmentsJson: data.attachments && data.attachments.length > 0 ? (data.attachments as any) : undefined,
         receivedAt: new Date(),
       },
     });
@@ -798,7 +1003,8 @@ export class MailService {
             bodyText: data.bodyText || data.bodyHtml.replace(/<[^>]*>?/gm, ''),
             isRead: false,
             isStarred: false,
-            hasAttachments: false,
+            hasAttachments: Boolean(data.attachments && data.attachments.length > 0),
+            attachmentsJson: data.attachments && data.attachments.length > 0 ? (data.attachments as any) : undefined,
             receivedAt: new Date(),
           },
         });
@@ -1330,6 +1536,160 @@ export class MailService {
     }
   }
 
+  // Live Sync emails from Custom Corporate IMAP Server
+  async syncCustomImapAccount(account: any): Promise<{ syncedCount: number; error?: string }> {
+    if (!account.imapHost || !account.imapPassword) {
+      return { syncedCount: 0, error: 'IMAP credentials not configured' };
+    }
+
+    const client = new ImapFlow({
+      host: account.imapHost.trim(),
+      port: account.imapPort || 993,
+      secure: account.imapTls !== false,
+      auth: {
+        user: account.imapUser?.trim() || account.emailAddress,
+        pass: account.imapPassword,
+      },
+      tls: {
+        rejectUnauthorized: false,
+      },
+      logger: false,
+    });
+
+    try {
+      await client.connect();
+      const lock = await client.getMailboxLock('INBOX');
+
+      let syncedCount = 0;
+      try {
+        const fetchedItems: any[] = [];
+        for await (const msg of client.fetch('1:*', {
+          envelope: true,
+          source: true,
+          flags: true,
+          uid: true,
+        })) {
+          fetchedItems.push(msg);
+        }
+
+        // Fetch up to the latest 25 messages in reverse chronological order
+        const recentMessages = fetchedItems.slice(-25).reverse();
+
+        for (const msg of recentMessages) {
+          const extId = `imap_${account.id}_${msg.uid}`;
+
+          const existing = await this.prisma.emailMessage.findFirst({
+            where: {
+              accountId: account.id,
+              externalMessageId: extId,
+            },
+          });
+
+          const needsAttachmentRepair =
+            existing &&
+            existing.hasAttachments &&
+            (!existing.attachmentsJson || (Array.isArray(existing.attachmentsJson) && existing.attachmentsJson.length === 0));
+
+          if ((!existing || needsAttachmentRepair) && msg.source) {
+            const parsed = await simpleParser(msg.source);
+            const fromAddr = parsed.from?.value?.[0]?.address || account.emailAddress;
+            const fromName = parsed.from?.value?.[0]?.name || fromAddr.split('@')[0];
+            const toAddrs = (parsed.to ? (Array.isArray(parsed.to) ? parsed.to : [parsed.to]) : [])
+              .flatMap((t: any) => t.value?.map((v: any) => v.address) || [])
+              .filter(Boolean);
+            const ccAddrs = (parsed.cc ? (Array.isArray(parsed.cc) ? parsed.cc : [parsed.cc]) : [])
+              .flatMap((c: any) => c.value?.map((v: any) => v.address) || [])
+              .filter(Boolean);
+
+            const attachmentsList: Array<{ fileName: string; fileUrl: string; fileSize: number; contentType: string }> = [];
+            if (parsed.attachments && parsed.attachments.length > 0) {
+              const uploadsDir = join(process.cwd(), 'uploads');
+              if (!existsSync(uploadsDir)) {
+                mkdirSync(uploadsDir, { recursive: true });
+              }
+
+              for (const att of parsed.attachments) {
+                try {
+                  const safeExt = extname(att.filename || '') || '.bin';
+                  const uniqueFilename = `mail_${Date.now()}_${Math.round(Math.random() * 1e9)}${safeExt}`;
+                  const filePath = join(uploadsDir, uniqueFilename);
+                  if (att.content) {
+                    await fsPromises.writeFile(filePath, att.content);
+                    attachmentsList.push({
+                      fileName: att.filename || 'attachment',
+                      fileUrl: `/uploads/${uniqueFilename}`,
+                      fileSize: att.size || att.content.length || 0,
+                      contentType: att.contentType || 'application/octet-stream',
+                    });
+                  }
+                } catch (attErr) {
+                  console.warn('Failed to save email attachment file:', attErr);
+                }
+              }
+            }
+
+            if (existing) {
+              if (attachmentsList.length > 0) {
+                await this.prisma.emailMessage.update({
+                  where: { id: existing.id },
+                  data: {
+                    hasAttachments: true,
+                    attachmentsJson: attachmentsList as any,
+                  },
+                });
+              }
+            } else {
+              await this.prisma.emailMessage.create({
+                data: {
+                  accountId: account.id,
+                  externalMessageId: extId,
+                  folder: EmailFolder.INBOX,
+                  fromName,
+                  fromAddress: fromAddr,
+                  toAddresses: toAddrs.length > 0 ? toAddrs : [account.emailAddress],
+                  ccAddresses: ccAddrs,
+                  subject: parsed.subject || '(no subject)',
+                  snippet: (parsed.text || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+                  bodyHtml: parsed.html || `<p>${(parsed.text || '').replace(/\n/g, '<br/>')}</p>`,
+                  bodyText: parsed.text || '',
+                  isRead: msg.flags?.has('\\Seen') || false,
+                  isStarred: msg.flags?.has('\\Flagged') || false,
+                  hasAttachments: attachmentsList.length > 0,
+                  attachmentsJson: attachmentsList.length > 0 ? (attachmentsList as any) : undefined,
+                  receivedAt: parsed.date || new Date(),
+                },
+              });
+              syncedCount++;
+            }
+          }
+        }
+      } finally {
+        lock.release();
+      }
+
+      await client.logout();
+
+      if (syncedCount > 0) {
+        await this.prisma.emailMessage.deleteMany({
+          where: {
+            accountId: account.id,
+            externalMessageId: { startsWith: 'msg_' },
+          },
+        });
+      }
+
+      await this.prisma.emailAccount.update({
+        where: { id: account.id },
+        data: { lastSyncedAt: new Date() },
+      });
+
+      return { syncedCount };
+    } catch (err: any) {
+      console.error('Custom IMAP sync error:', err);
+      return { syncedCount: 0, error: err?.message || 'IMAP_SYNC_ERROR' };
+    }
+  }
+
   // Sync / refresh emails for an account
   async syncAccount(userId: string, accountId: string) {
     const account = await this.prisma.emailAccount.findFirst({
@@ -1361,6 +1721,19 @@ export class MailService {
         lastSyncedAt: updated?.lastSyncedAt,
         syncedCount: syncResult.syncedCount,
         requiresReauth: syncResult.requiresReauth,
+        error: syncResult.error,
+      };
+    }
+
+    if (account.provider === EmailProvider.CUSTOM && (account as any).imapHost) {
+      const syncResult = await this.syncCustomImapAccount(account);
+      const updated = await this.prisma.emailAccount.findUnique({
+        where: { id: accountId },
+      });
+      return {
+        success: true,
+        lastSyncedAt: updated?.lastSyncedAt,
+        syncedCount: syncResult.syncedCount,
         error: syncResult.error,
       };
     }
