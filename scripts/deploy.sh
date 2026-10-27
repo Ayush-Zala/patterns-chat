@@ -14,18 +14,18 @@ APP_DIR="/var/www/chat"
 cd "$APP_DIR"
 
 echo "=================================================="
-echo "🚀 Patterns Chat: Starting Automated Deployment"
-echo "⏰ Time: $(date)"
-echo "📂 App Directory: $APP_DIR"
+echo "Patterns Chat: Starting Automated Deployment"
+echo "Time: $(date)"
+echo "App Directory: $APP_DIR"
 echo "=================================================="
 
 # 1. Update source code to latest commit on main
-echo "📥 [1/4] Pulling latest changes from git origin/main..."
+echo "[1/4] Pulling latest changes from git origin/main..."
 git fetch origin main
 git reset --hard origin/main
 
 # 2. Build & Deploy Backend (Port 3006)
-echo "⚙️ [2/4] Deploying Backend..."
+echo "[2/4] Deploying Backend..."
 cd "$APP_DIR/backend"
 
 # Ensure backend PORT=3006 is configured in .env
@@ -55,7 +55,7 @@ else
 fi
 
 # 3. Build & Deploy Frontend (Port 3005)
-echo "🎨 [3/4] Deploying Frontend..."
+echo "[3/4] Deploying Frontend..."
 cd "$APP_DIR/frontend"
 
 # Ensure frontend .env.production is present
@@ -80,11 +80,11 @@ else
 fi
 
 # 4. Save PM2 state & verify
-echo "💾 [4/4] Saving PM2 state..."
+echo "[4/4] Saving PM2 state..."
 pm2 save
 
 echo "=================================================="
-echo "🎉 Deployment Completed Successfully!"
+echo "Deployment Completed Successfully!"
 echo "Backend: Port 3006 | Frontend: Port 3005"
 echo "Health: https://chat.kevindevops.online"
 echo "=================================================="
